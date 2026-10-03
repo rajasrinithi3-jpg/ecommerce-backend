@@ -1,0 +1,180 @@
+:root {
+  --text: #806f78;
+  --text-h: #624957;
+  --bg: #fff8f5;
+  --border: #e4afb0;
+  --code-bg: #f4eeee;
+  --accent: #9a7787;
+  --accent-bg: rgba(154, 119, 135, 0.1);
+  --accent-border: rgba(154, 119, 135, 0.5);
+  --social-bg: rgba(254, 215, 191, 0.5);
+
+  --shadow:
+    rgba(98, 73, 87, 0.12) 0 10px 15px -3px,
+    rgba(98, 73, 87, 0.06) 0 4px 6px -2px;
+
+  --sans: system-ui, "Segoe UI", Roboto, sans-serif;
+  --heading: system-ui, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, Consolas, monospace;
+
+  font: 18px/145% var(--sans);
+  letter-spacing: 0.18px;
+
+  color: var(--text);
+  background: var(--bg);
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* =========================
+   PAGE / ROOT
+   ========================= */
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  background: var(--bg);
+  overflow-x: hidden;
+}
+
+/* FULL SCREEN ROOT */
+#root {
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  min-height: 100svh;
+
+  margin: 0;
+  padding: 0;
+
+  text-align: center;
+
+  box-sizing: border-box;
+
+  display: flex;
+  flex-direction: column;
+
+  border: none;
+}
+
+/* =========================
+   HEADINGS
+   ========================= */
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--heading);
+  color: #624957 !important;
+  font-weight: 600;
+}
+
+h1 {
+  font-size: 56px;
+  letter-spacing: -1.68px;
+  margin: 32px 0;
+}
+
+h2 {
+  font-size: 24px;
+  line-height: 118%;
+  letter-spacing: -0.24px;
+  margin: 0 0 8px;
+}
+
+h3 {
+  font-size: 22px;
+}
+
+h4 {
+  font-size: 20px;
+}
+
+p {
+  margin: 0;
+  color: #806f78;
+}
+
+/* =========================
+   INPUTS
+   ========================= */
+
+input,
+textarea {
+  color: #624957 !important;
+  background: #ffffff;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #806f78 !important;
+  opacity: 1;
+}
+
+/* =========================
+   CODE
+   ========================= */
+
+code,
+.counter {
+  font-family: var(--mono);
+  display: inline-flex;
+  border-radius: 4px;
+  color: var(--text-h);
+}
+
+code {
+  font-size: 15px;
+  line-height: 135%;
+  padding: 4px 8px;
+  background: var(--code-bg);
+}
+
+/* =========================
+   BUTTONS
+   ========================= */
+
+button {
+  font-family: var(--sans);
+}
+
+/* =========================
+   RESPONSIVE
+   ========================= */
+
+@media (max-width: 1024px) {
+  :root {
+    font-size: 16px;
+  }
+
+  h1 {
+    font-size: 36px;
+    margin: 20px 0;
+  }
+
+  h2 {
+    font-size: 20px;
+  }
+}
+
+@media (max-width: 600px) {
+  h1 {
+    font-size: 30px;
+  }
+
+  h2 {
+    font-size: 20px;
+  }
+}

@@ -1,0 +1,37 @@
+CommerceIQ-AI - simple setup (Windows)
+
+WHAT'S IN THIS FOLDER
+  backend/   -> everything for the FastAPI server (already complete)
+  frontend/src/ -> the React source files (replace the ones in your Vite project)
+  .gitignore -> put at the very top of the project (fixes the old "*" one)
+
+WHAT YOU KEEP FROM YOUR OWN PROJECT (not in this zip)
+  frontend/package.json, index.html, vite.config.ts, tsconfig files, node_modules
+  If you don't have a frontend folder yet, create one with:  npm create vite@latest frontend -- --template react-ts
+  then run:  cd frontend && npm install firebase   and copy frontend/src/* over its src/
+
+STEP 1 - BACKEND (open a terminal in the backend folder)
+  python -m venv .venv
+  .venv\Scripts\activate
+  pip install -r requirements.txt
+  python scripts\load_data.py
+  uvicorn main:app --reload --host 0.0.0.0 --port 8000
+  -> open http://127.0.0.1:8000/docs to check it works
+
+STEP 2 - FRONTEND (open a SECOND terminal in the frontend folder)
+  copy .env.example .env
+  npm install
+  npm run dev
+  -> open the link it shows (usually http://localhost:5173)
+
+STEP 3 - TEST
+  Products page shows real products and categories.
+  Analytics tab shows live store metrics and category charts.
+  Click a product: buy/wait badge, competitors, reviews, recommendations.
+  Click "Buyer Dashboard" while logged out: should ask you to log in.
+  Sign up / log in, pick Buyer or Seller, open both dashboards.
+
+STEP 4 - PUSH TO GITHUB (from the top CommerceIQ-AI folder)
+  git add .
+  git commit -m "Add analytics, dashboards and role gates"
+  git push
