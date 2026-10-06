@@ -124,6 +124,20 @@ def main():
 
     db = SessionLocal()
 
+    demo_seller_ids = [f"demo-seller-{number}" for number in range(1, 4)]
+    db.add_all(
+        models.User(
+            uid=seller_id,
+            email=f"{seller_id}@example.test",
+            role="seller",
+        )
+        for seller_id in demo_seller_ids
+    )
+    db.flush()
+    seller_counts = dict.fromkeys(demo_seller_ids, 0)
+    category_seller_offsets = {}
+    category_product_counts = {}
+
     category_cache: dict[str, models.Category] = {}
 
     def get_or_create_category(name: str) -> models.Category:
@@ -181,6 +195,15 @@ def main():
         if cat_name in small:
             cat_name = "Other"
         category = get_or_create_category(cat_name)
+        category_offset = category_seller_offsets.setdefault(
+            cat_name, len(category_seller_offsets) % len(demo_seller_ids)
+        )
+        category_product_index = category_product_counts.get(cat_name, 0)
+        seller_id = demo_seller_ids[
+            (category_offset + category_product_index) % len(demo_seller_ids)
+        ]
+        category_product_counts[cat_name] = category_product_index + 1
+        seller_counts[seller_id] += 1
 
         product = models.Product(
             title=title,
@@ -188,6 +211,7 @@ def main():
             price=final_price,
             brand=clean_text(row.get("brand")),
             category_id=category.id,
+            seller_id=seller_id,
             initial_price=initial_price,
             discount_pct=discount_pct,
             rating=clean_price(row.get("rating")),
@@ -220,6 +244,8 @@ def main():
     db.close()
 
     print(f"Loaded {loaded} products across {len(category_cache)} categories")
+    for seller_id, count in seller_counts.items():
+        print(f"{seller_id}: {count} products")
     if unreliable_discounts:
         print(f"Ignored {unreliable_discounts} corrupted list prices/discounts")
     if skipped:

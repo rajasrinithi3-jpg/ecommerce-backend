@@ -8,3 +8,5 @@ numpy
 python-dotenv
 httpx
 python-dateutil
+google-auth
+requests

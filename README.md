@@ -1,5 +1,23 @@
 # CommerceIQ-AI
 
+## Run with Docker
+
+1. Copy the example env file at the repo root:
+   ```bash
+   copy .env.example .env
+   ```
+2. Start the app:
+   ```bash
+   docker compose up --build
+   ```
+3. Open the app in your browser:
+   - Frontend: http://localhost:5173
+   - Backend API: http://localhost:8000/docs
+4. To reset the database and container state:
+   ```bash
+   docker compose down -v
+   ```
+
 If this project was downloaded into a same-named folder, this directory (the one containing this
 README) is the project root. Run the setup commands below from this directory, not from its parent.
 

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from sqlalchemy import Column, Integer, String, Float, ForeignKey, Text, DateTime
 from sqlalchemy.orm import relationship
 from database import Base
@@ -31,9 +33,22 @@ class Product(Base):
     bs_rank = Column(Integer, nullable=True)            # best-sellers rank; lower = more popular
     number_of_sellers = Column(Integer, nullable=True)  # buybox competition signal
     date_first_available = Column(DateTime, nullable=True)
+    seller_id = Column(String, ForeignKey("users.uid"), nullable=True, index=True)
 
     category = relationship("Category", back_populates="products")
     reviews = relationship("Review", back_populates="product")
+    seller = relationship("User", back_populates="products")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    uid = Column(String, primary_key=True)
+    email = Column(String, nullable=True)
+    role = Column(String, nullable=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    products = relationship("Product", back_populates="seller")
 
 class Review(Base):
     __tablename__ = "reviews"

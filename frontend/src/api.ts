@@ -1,3 +1,5 @@
+import { auth } from "./firebase";
+
 // API_BASE_URL is read from a Vite env var so the app can point at a
 // backend running on another machine on the LAN without a code change.
 // Set VITE_API_BASE_URL in a .env file (see .env.example) e.g.:
@@ -5,16 +7,65 @@
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
-async function fetchJSON<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+export class ApiError extends Error {
+  constructor(public status: number, message: string) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+async function apiFetch(url: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  const token = await auth.currentUser?.getIdToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+
+  const response = await fetch(url, { ...init, headers });
 
   if (!response.ok) {
-    throw new Error(
-      `API request failed: ${response.status} ${response.statusText}`
-    );
+    const body = await response.json().catch(() => null);
+    const message = typeof body?.detail === "string"
+      ? body.detail
+      : `API request failed: ${response.status} ${response.statusText}`;
+    if (
+      (response.status === 401 || response.status === 403) &&
+      (response.status === 401 || !url.endsWith("/auth/me"))
+    ) {
+      window.dispatchEvent(
+        new CustomEvent("commerceiq:api-error", {
+          detail: { status: response.status, message },
+        })
+      );
+    }
+    throw new ApiError(response.status, message);
   }
 
-  return response.json();
+  return response;
+}
+
+async function fetchJSON<T>(url: string): Promise<T> {
+  const response = await apiFetch(url);
+  return response.json() as Promise<T>;
+}
+
+export type AuthRole = "buyer" | "seller";
+
+export type AuthUser = {
+  uid: string;
+  email: string | null;
+  role: AuthRole;
+};
+
+export async function registerRole(role: AuthRole) {
+  const response = await apiFetch(`${API_BASE_URL}/auth/register`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ role }),
+  });
+  return response.json() as Promise<AuthUser & { created_at: string }>;
+}
+
+export async function getCurrentUser() {
+  return fetchJSON<AuthUser>(`${API_BASE_URL}/auth/me`);
 }
 
 export type ChatMessage = {
@@ -40,16 +91,11 @@ export type ChatResponse = {
 };
 
 export async function sendChat(message: string, history: ChatMessage[]) {
-  const response = await fetch(`${API_BASE_URL}/chat`, {
+  const response = await apiFetch(`${API_BASE_URL}/chat`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message, history: history.slice(-6) }),
   });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const detail = typeof body?.detail === "string" ? body.detail : response.statusText;
-    throw new Error(detail || "Chat request failed. Please try again.");
-  }
   return response.json() as Promise<ChatResponse>;
 }
 
@@ -281,4 +327,8 @@ export async function getBuyerDashboard() {
 export async function getSellerDashboard(categoryId?: number) {
   const query = categoryId !== undefined ? `?category_id=${categoryId}` : "";
   return fetchJSON<SellerDashboard>(`${API_BASE_URL}/analytics/seller${query}`);
+}
+
+export async function getSellerProducts() {
+  return fetchJSON<BackendProduct[]>(`${API_BASE_URL}/seller/products`);
 }

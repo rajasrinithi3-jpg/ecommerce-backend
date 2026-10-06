@@ -1,6 +1,8 @@
 import os
+import runpy
 import statistics
 from datetime import datetime
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -8,21 +10,43 @@ load_dotenv()
 
 from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from chatbot import ChatbotService, ChatRateLimiter
 from src.recommendation.recommender import Recommender
+from auth import require_role
+from auth_routes import router as auth_router
+from database import ensure_product_seller_id_column
 import models
 from database import SessionLocal, engine, get_db
+from seller_routes import router as seller_router
 
 recommender = Recommender()
 
-# Create database tables automatically
+# Create database tables automatically and seed demo data if the database is empty.
 models.Base.metadata.create_all(bind=engine)
+ensure_product_seller_id_column()
+
+
+def ensure_seeded_data() -> None:
+    with SessionLocal() as db:
+        product_count = db.execute(text("SELECT COUNT(*) FROM products")).scalar_one() or 0
+        category_count = db.execute(text("SELECT COUNT(*) FROM categories")).scalar_one() or 0
+
+    if product_count == 0 or category_count == 0:
+        script_path = Path(__file__).resolve().parent / "scripts" / "load_data.py"
+        if script_path.exists():
+            runpy.run_path(str(script_path), run_name="__main__")
+
+
+ensure_seeded_data()
 
 app = FastAPI(title="Ecommerce Backend API")
+app.include_router(auth_router)
+app.include_router(seller_router)
 
 # --- CORS ---
 # Frontend origins allowed to call this API. Vite's dev server defaults to
@@ -47,7 +71,7 @@ app.add_middleware(
     allow_origins=default_origins + extra_origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type"],
 )
 
 # --- Pydantic Schemas ---
@@ -98,6 +122,10 @@ class ChatRequest(BaseModel):
 @app.get("/")
 def read_root():
     return {"message": "Welcome to Ecommerce Backend API"}
+
+@app.get("/health")
+def health_check():
+    return {"status": "ok"}
 
 # 2. Get All Products (Database)
 @app.get("/products")
@@ -411,7 +439,10 @@ def get_analytics_overview(db: Session = Depends(get_db)):
 
 # --- Buyer dashboard ---
 @app.get("/analytics/buyer")
-def get_buyer_dashboard(db: Session = Depends(get_db)):
+def get_buyer_dashboard(
+    user: models.User = Depends(require_role("buyer")),
+    db: Session = Depends(get_db),
+):
     products = db.query(models.Product).all()
 
     def brief(p):
@@ -468,14 +499,22 @@ def get_buyer_dashboard(db: Session = Depends(get_db)):
 # The dataset has no seller ownership or cost data, so this is a market view:
 # "how is this category priced, and where is there room to move?"
 @app.get("/analytics/seller")
-def get_seller_dashboard(category_id: Optional[int] = None, db: Session = Depends(get_db)):
+def get_seller_dashboard(
+    category_id: Optional[int] = None,
+    user: models.User = Depends(require_role("seller")),
+    db: Session = Depends(get_db),
+):
     all_products = db.query(models.Product).all()
     categories = {c.id: c.name for c in db.query(models.Category).all()}
 
     if category_id is not None and category_id not in categories:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Category not found")
 
-    scope = [p for p in all_products if category_id is None or p.category_id == category_id]
+    seller_products = [p for p in all_products if p.seller_id == user.uid]
+    scope = [
+        p for p in seller_products
+        if category_id is None or p.category_id == category_id
+    ]
 
     def avg(values):
         values = [v for v in values if v is not None]

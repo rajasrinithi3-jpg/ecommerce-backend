@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 import chatbot
 import main
 import models
+from auth import get_token_verifier
 from database import SessionLocal
 
 
@@ -99,6 +100,8 @@ class ChatEndpointTests(unittest.TestCase):
             response = self.post_chat("cheapest electronics")
         self.assertEqual(response.status_code, 200)
         self.assertIn("options in Electronics", response.json()["reply"])
+        self.assertIn("a few worth a look", response.json()["reply"])
+        self.assertIn("narrow these down", response.json()["reply"])
 
     def test_offline_reply_describes_budget_range(self):
         history = [{"role": "user", "content": "I need sportswear"}]
@@ -196,12 +199,41 @@ class ChatEndpointTests(unittest.TestCase):
         self.assertEqual(insight.status_code, 200)
         self.assertEqual(insight.json()["buy_or_wait"]["recommendation"], "BUY_NOW")
         self.assertEqual(len(insight.json()["competitors"]), 5)
-        self.assertEqual(self.client.get("/analytics/buyer").status_code, 200)
-        seller = self.client.get("/analytics/seller")
-        self.assertEqual(seller.status_code, 200)
-        snapshot = seller.json()["demand_snapshot"]
-        self.assertTrue(snapshot)
-        self.assertTrue(all(item["estimated_weekly_units"] == round(item["bought_past_month"] / 4.3) for item in snapshot))
+        buyer_uid = f"chat-test-buyer-{uuid.uuid4().hex}"
+        seller_uid = f"chat-test-seller-{uuid.uuid4().hex}"
+        main.app.dependency_overrides[get_token_verifier] = lambda: lambda token: {
+            "sub": token,
+            "email": f"{token}@example.test",
+        }
+        try:
+            for uid, role in ((buyer_uid, "buyer"), (seller_uid, "seller")):
+                registration = self.client.post(
+                    "/auth/register",
+                    headers={"Authorization": f"Bearer {uid}"},
+                    json={"role": role},
+                )
+                self.assertEqual(registration.status_code, 200)
+
+            buyer = self.client.get(
+                "/analytics/buyer",
+                headers={"Authorization": f"Bearer {buyer_uid}"},
+            )
+            seller = self.client.get(
+                "/analytics/seller",
+                headers={"Authorization": f"Bearer {seller_uid}"},
+            )
+            self.assertEqual(buyer.status_code, 200)
+            self.assertEqual(seller.status_code, 200)
+            snapshot = seller.json()["demand_snapshot"]
+            self.assertTrue(all(item["estimated_weekly_units"] == round(item["bought_past_month"] / 4.3) for item in snapshot))
+        finally:
+            main.app.dependency_overrides.clear()
+            db = SessionLocal()
+            try:
+                db.query(models.User).filter(models.User.uid.in_([buyer_uid, seller_uid])).delete()
+                db.commit()
+            finally:
+                db.close()
 
 
 if __name__ == "__main__":

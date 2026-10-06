@@ -8,6 +8,11 @@ import {
   getAnalyticsOverview,
   getBuyerDashboard,
   getSellerDashboard,
+  getCurrentUser,
+  registerRole,
+  ApiError,
+  type AuthRole,
+  type AuthUser,
   type BuyerDashboard as BuyerDashboardData,
   type SellerDashboard as SellerDashboardData,
   type BackendCategory,
@@ -50,33 +55,11 @@ type Page =
   | "cart"
   | "login"
   | "signup"
-  | "details";
+  | "details"
+  | "forbidden";
 
 
-type Role = "buyer" | "seller";
-
-// V1 role handling: the role is remembered per Firebase user in this
-// browser (localStorage). It gates the UI only - it is NOT server-side
-// security. Real enforcement would need Firebase custom claims or a
-// verified-token check on the FastAPI side.
-const ROLE_KEY = (uid: string) => `commerceiq_role_${uid}`;
-
-function loadRole(uid: string): Role | null {
-  try {
-    const value = localStorage.getItem(ROLE_KEY(uid));
-    return value === "buyer" || value === "seller" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveRole(uid: string, role: Role) {
-  try {
-    localStorage.setItem(ROLE_KEY(uid), role);
-  } catch {
-    /* storage unavailable - role just won't persist */
-  }
-}
+type Role = AuthRole;
 
 // Fallback image used whenever the backend doesn't have a product image.
 const FALLBACK_IMAGE =
@@ -99,6 +82,9 @@ function App() {
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [role, setRoleState] = useState<Role | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [roleError, setRoleError] = useState<string | null>(null);
+  const [accessDeniedMessage, setAccessDeniedMessage] = useState("");
   const [backendProducts, setBackendProducts] = useState<any[]>([]);
   const [categories, setCategories] = useState<BackendCategory[]>([]);
   const [dataError, setDataError] = useState<string | null>(null);
@@ -165,17 +151,75 @@ const filteredProducts = backendMappedProducts.filter((product) => {
   return matchesSearch && matchesCategory;
 });
 useEffect(() => {
-  const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+  let active = true;
+  let generation = 0;
+  const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const currentGeneration = ++generation;
     setUser(currentUser);
-    setRoleState(currentUser ? loadRole(currentUser.uid) : null);
+    setRoleState(null);
+    setRoleError(null);
+    if (!currentUser) {
+      setAuthReady(true);
+      return;
+    }
+
+    setAuthReady(false);
+    try {
+      const serverUser = await getCurrentUser();
+      if (active && currentGeneration === generation) {
+        setRoleState(serverUser.role);
+      }
+    } catch (error) {
+      if (active && currentGeneration === generation) {
+        setRoleError(
+          error instanceof ApiError && error.status === 403
+            ? "This account has no registered role yet. Choose one to finish registration."
+            : "We couldn't verify your account with the backend. Please try again."
+        );
+      }
+    } finally {
+      if (active && currentGeneration === generation) setAuthReady(true);
+    }
   });
 
-  return unsubscribe;
+  return () => {
+    active = false;
+    unsubscribe();
+  };
 }, []);
 
-const setRole = (newRole: Role) => {
-  if (user) saveRole(user.uid, newRole);
-  setRoleState(newRole);
+useEffect(() => {
+  const handleApiError = (event: Event) => {
+    const { status: responseStatus, message } = (event as CustomEvent<{
+      status: number;
+      message: string;
+    }>).detail;
+    if (responseStatus === 401) {
+      setRoleState(null);
+      setPage("login");
+    } else if (responseStatus === 403) {
+      setAccessDeniedMessage(message);
+      setPage("forbidden");
+    }
+  };
+  window.addEventListener("commerceiq:api-error", handleApiError);
+  return () => window.removeEventListener("commerceiq:api-error", handleApiError);
+}, []);
+
+const registerAccountRole = async (newRole: Role) => {
+  try {
+    const serverUser = await registerRole(newRole);
+    setRoleState(serverUser.role);
+    setRoleError(null);
+  } catch (error) {
+    setRoleError(error instanceof Error ? error.message : "Role registration failed.");
+  }
+};
+
+const acceptRegisteredUser = (serverUser: AuthUser) => {
+  setRoleState(serverUser.role);
+  setRoleError(null);
+  setAuthReady(true);
 };
 
   const addToCart = (product: Product) => {
@@ -382,7 +426,9 @@ const setRole = (newRole: Role) => {
     required="buyer"
     user={user}
     role={role}
-    onSetRole={setRole}
+    authReady={authReady}
+    roleError={roleError}
+    onRegisterRole={registerAccountRole}
     onLogin={() => setPage("login")}
     onSignup={() => setPage("signup")}
   >
@@ -403,7 +449,9 @@ const setRole = (newRole: Role) => {
     required="seller"
     user={user}
     role={role}
-    onSetRole={setRole}
+    authReady={authReady}
+    roleError={roleError}
+    onRegisterRole={registerAccountRole}
     onLogin={() => setPage("login")}
     onSignup={() => setPage("signup")}
   >
@@ -440,7 +488,16 @@ const setRole = (newRole: Role) => {
   <SignupPage
     onLogin={() => setPage("login")}
     onHome={() => setPage("home")}
+    onRegistered={acceptRegisteredUser}
   />
+)}
+
+{page === "forbidden" && (
+  <section role="alert" style={{ textAlign: "center", padding: "48px 20px" }}>
+    <h1>Not allowed for your role</h1>
+    <p style={{ color: colors.text }}>{accessDeniedMessage}</p>
+    <button onClick={() => setPage("home")}>Return home</button>
+  </section>
 )}
       </main>
 
@@ -1379,7 +1436,9 @@ function RoleGate({
   required,
   user,
   role,
-  onSetRole,
+  authReady,
+  roleError,
+  onRegisterRole,
   onLogin,
   onSignup,
   children,
@@ -1387,7 +1446,9 @@ function RoleGate({
   required: Role;
   user: User | null;
   role: Role | null;
-  onSetRole: (role: Role) => void;
+  authReady: boolean;
+  roleError: string | null;
+  onRegisterRole: (role: Role) => void;
   onLogin: () => void;
   onSignup: () => void;
   children: React.ReactNode;
@@ -1440,37 +1501,36 @@ function RoleGate({
     );
   }
 
-  // Gate 2: signed in, but hasn't picked a role yet.
+  if (!authReady) {
+    return <p role="status">Checking your account...</p>;
+  }
+
+  // A role is chosen only when the authenticated account is first registered.
   if (!role) {
     return (
       <div style={card}>
         <div style={{ fontSize: "40px" }}>👋</div>
-        <h2>How will you use CommerceIQ?</h2>
+        <h2>Complete account registration</h2>
         <p style={{ color: colors.text }}>
-          Pick a role to continue. You can switch it later from a dashboard gate.
+          {roleError || "Choose the role for this account."}
         </p>
         <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
-          <button style={primary} onClick={() => onSetRole("buyer")}>🛒 I'm a Buyer</button>
-          <button style={primary} onClick={() => onSetRole("seller")}>🏪 I'm a Seller</button>
+          <button style={primary} onClick={() => onRegisterRole("buyer")}>🛒 I'm a Buyer</button>
+          <button style={primary} onClick={() => onRegisterRole("seller")}>🏪 I'm a Seller</button>
         </div>
       </div>
     );
   }
 
-  // Gate 3: wrong role for this dashboard.
+  // The server remains authoritative even if a dashboard is reached directly.
   if (role !== required) {
     return (
       <div style={card}>
         <div style={{ fontSize: "40px" }}>{icon}</div>
-        <h2>{label}s only</h2>
+        <h2>Not allowed for your role</h2>
         <p style={{ color: colors.text }}>
-          You're signed in as a {role}. The {label.toLowerCase()} dashboard is for {label.toLowerCase()}s.
+          You're signed in as a {role}. This dashboard is for {label.toLowerCase()}s.
         </p>
-        <div style={{ marginTop: "20px" }}>
-          <button style={primary} onClick={() => onSetRole(required)}>
-            Switch to {label} role
-          </button>
-        </div>
       </div>
     );
   }
@@ -2148,7 +2208,6 @@ function LoginPage({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"buyer" | "seller">("buyer");
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -2160,15 +2219,7 @@ function LoginPage({
 
     try {
       await signInWithEmailAndPassword(auth, email, password);
-
-      // Selected role for this login session
-      localStorage.setItem("userRole", role);
-
-      alert(
-        `Login successful! 🎉\nLogged in as ${
-          role === "buyer" ? "Buyer 🛍️" : "Seller 🏪"
-        }`
-      );
+      onHome();
     } catch (error: any) {
       console.error("Firebase Login Error:", error);
 
@@ -2251,77 +2302,6 @@ function LoginPage({
             }}
           />
 
-          {/* ROLE */}
-          <label
-            style={{
-              fontWeight: "600",
-              display: "block",
-              marginBottom: "12px",
-            }}
-          >
-            Login as
-          </label>
-
-          <div
-            style={{
-              display: "flex",
-              gap: "15px",
-              marginBottom: "25px",
-            }}
-          >
-            {/* Buyer */}
-            <label
-              style={{
-                flex: 1,
-                padding: "15px",
-                borderRadius: "12px",
-                border:
-                  role === "buyer"
-                    ? "2px solid #9A7787"
-                    : "1px solid #ddd",
-                background: role === "buyer" ? "#FDF5F2" : "#fff",
-                cursor: "pointer",
-                textAlign: "center",
-              }}
-            >
-              <input
-                type="radio"
-                name="role"
-                value="buyer"
-                checked={role === "buyer"}
-                onChange={() => setRole("buyer")}
-                style={{ marginRight: "8px" }}
-              />
-              🛍️ Buyer
-            </label>
-
-            {/* Seller */}
-            <label
-              style={{
-                flex: 1,
-                padding: "15px",
-                borderRadius: "12px",
-                border:
-                  role === "seller"
-                    ? "2px solid #9A7787"
-                    : "1px solid #ddd",
-                background: role === "seller" ? "#FDF5F2" : "#fff",
-                cursor: "pointer",
-                textAlign: "center",
-              }}
-            >
-              <input
-                type="radio"
-                name="role"
-                value="seller"
-                checked={role === "seller"}
-                onChange={() => setRole("seller")}
-                style={{ marginRight: "8px" }}
-              />
-              🏪 Seller
-            </label>
-          </div>
-
           {/* Login Button */}
           <button
             type="submit"
@@ -2381,9 +2361,11 @@ function LoginPage({
 function SignupPage({
   onLogin,
   onHome,
+  onRegistered,
 }: {
   onLogin: () => void;
   onHome: () => void;
+  onRegistered: (serverUser: AuthUser) => void;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -2413,9 +2395,9 @@ function SignupPage({
       await updateProfile(userCredential.user, {
         displayName: name,
       });
-onHome();
-      // Save selected role
-      localStorage.setItem("userRole", role);
+      const serverUser = await registerRole(role);
+      onRegistered(serverUser);
+      onHome();
 
       alert(
         `Account created successfully! 🎉\nYou registered as ${
