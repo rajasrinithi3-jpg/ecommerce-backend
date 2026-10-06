@@ -316,7 +316,7 @@ class ChatbotService:
 
     def offline_reply(self, candidates: list[dict], context: dict) -> str:
         if not candidates:
-            return "I couldn't find matching products in the catalog. Try a different category or budget."
+            return "I couldn't find a match in the catalog yet. Try a broader category or budget and I'll take another look."
 
         qualifiers = []
         budget = context["budget"]
@@ -332,7 +332,7 @@ class ChatbotService:
             qualifiers.append(f"in {category}")
 
         description = f" {' '.join(qualifiers)}" if qualifiers else ""
-        text = f"Here are {len(candidates)} options{description}:"
+        text = f"I found {len(candidates)} options{description}. Here are a few worth a look:"
         if context["relaxed_category"]:
             text += " I couldn't find matches in that category, so these are from other categories."
         if context["relaxed_budget"]:
@@ -340,6 +340,7 @@ class ChatbotService:
         for product in candidates:
             rating = f", rating {product['rating']:.1f}" if product["rating"] is not None else ""
             text += f"\n• {product['title'][:90]} — ₹{product['price']:,.0f}{rating}; {product['signal'].replace('_', ' ')}."
+        text += "\nWant me to narrow these down by brand or compare a couple?"
         return text
 
 
