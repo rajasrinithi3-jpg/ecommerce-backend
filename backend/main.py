@@ -1,4 +1,3 @@
-import os
 import statistics
 from datetime import datetime
 
@@ -24,27 +23,9 @@ models.Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="Ecommerce Backend API")
 
-# --- CORS ---
-# Frontend origins allowed to call this API. Vite's dev server defaults to
-# 5173, but can pick a different port if that one's busy, so a couple of
-# common fallbacks are included. Add your teammate's actual dev URL here
-# (e.g. "http://192.168.1.42:5173" for LAN access) via FRONTEND_ORIGINS,
-# a comma-separated env var, so nobody has to hardcode/redeploy for it.
-default_origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:4173",
-    "http://127.0.0.1:4173",
-]
-extra_origins = [
-    origin.strip()
-    for origin in os.getenv("FRONTEND_ORIGINS", "").split(",")
-    if origin.strip()
-]
-
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=default_origins + extra_origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

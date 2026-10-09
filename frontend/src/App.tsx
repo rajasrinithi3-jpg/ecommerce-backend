@@ -95,14 +95,25 @@ function App() {
   const [page, setPage] = useState<Page>("home");
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
-  const [cartItems, setCartItems] = useState<Product[]>([]);
+  const [cartItems, setCartItems] = useState<Product[]>(() => {
+  try {
+    const savedCart = localStorage.getItem('commerceiq_cart');
+    return savedCart ? JSON.parse(savedCart) : [];
+  } catch (e) {
+    return [];
+  }
+});
+
+useEffect(() => {
+  localStorage.setItem('commerceiq_cart', JSON.stringify(cartItems));
+}, [cartItems]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [role, setRoleState] = useState<Role | null>(null);
   const [backendProducts, setBackendProducts] = useState<any[]>([]);
   const [categories, setCategories] = useState<BackendCategory[]>([]);
   const [dataError, setDataError] = useState<string | null>(null);
-
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
 useEffect(() => {
   const loadProducts = async () => {
     try {
@@ -137,20 +148,42 @@ useEffect(() => {
 // show up on cards, the details page, and the filter chips.
 const categoryNameById = new Map(categories.map((c) => [c.id, c.name]));
 
-const backendMappedProducts: Product[] = backendProducts.map((product) => ({
-  id: Number(product.id),
-  name: product.title || "Untitled Product",
-  category:
+const backendMappedProducts: Product[] = backendProducts.map((product: any, index: number) => {
+  const categoryName =
     categoryNameById.get(product.category_id) ??
-    `Category ${product.category_id ?? "Unknown"}`,
-  categoryId: product.category_id,
-  price: Number(product.price ?? 0),
-  rating: Number(product.rating ?? 4.5),
-  image: product.image || FALLBACK_IMAGE,
-  description: product.description || "",
-  brand: product.brand || "",
-}));
+    `Category ${product.category_id ?? "Unknown"}`;
 
+  // Category-wise high quality Unsplash fallback images
+  const categoryImages: Record<string, string> = {
+    "Clothing, Shoes & Jewelry": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=500&auto=format&fit=crop&q=60",
+    "Tools & Home Improvement": "https://images.unsplash.com/photo-1581092160607-ee22621dd758?w=500&auto=format&fit=crop&q=60",
+    "Automotive": "https://images.unsplash.com/photo-1511919884226-fd3cad34687c?w=500&auto=format&fit=crop&q=60",
+    "Office Products": "https://images.unsplash.com/photo-1583485088034-697b5bc54ccd?w=500&auto=format&fit=crop&q=60",
+    "Electronics": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500&auto=format&fit=crop&q=60",
+  };
+
+  const dynamicFallback =
+    categoryImages[categoryName] ||
+    `https://picsum.photos/seed/${product.id || index}/500/300`;
+
+  return {
+    id: Number(product.id),
+    name: product.title || "Untitled Product",
+    category: categoryName,
+    categoryId: product.category_id,
+    price: Number(product.price ?? 0),
+    signal: product.signal,
+    signalLabel: product.signal_label,
+    buyLogic: product.buy_logic,
+    chartData: product.chart_data,
+    sellerId: product.seller_id,
+    rating: product.rating ?? 4.0,
+    reviewCount: product.review_count ?? 0,
+    image: product.image_url || product.image || dynamicFallback,
+    imageUrl: product.image_url || product.image || dynamicFallback,
+    description: product.description,
+  };
+});
 const categoryOptions = ["All", ...categories.map((c) => c.name)];
 
 const filteredProducts = backendMappedProducts.filter((product) => {
@@ -179,8 +212,10 @@ const setRole = (newRole: Role) => {
 };
 
   const addToCart = (product: Product) => {
-    setCartItems((items) => [...items, product]);
-  };
+  setCartItems((items) => [...items, product]);
+  setToastMessage(`${product.name} added to cart!`);
+  setTimeout(() => setToastMessage(null), 3000);
+};
 
   const removeFromCart = (index: number) => {
     setCartItems((items) => items.filter((_, i) => i !== index));
@@ -199,6 +234,31 @@ const setRole = (newRole: Role) => {
         fontFamily: "Arial, sans-serif",
       }}
     >
+   {toastMessage && (
+        <div
+          style={{
+            position: "fixed",
+            top: "20px",
+            left: "50%",
+            transform: "translateX(-50%)",
+            backgroundColor: "#131921",
+            color: "#ffffff",
+            padding: "8px 18px",
+            borderRadius: "8px",
+            fontSize: "13px",
+            fontWeight: "500",
+            boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
+            zIndex: 9999,
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+            border: "1px solid #232f3e",
+          }}
+        >
+          <span style={{ color: "#25d366", fontWeight: "bold" }}>✓</span>
+          <span>{toastMessage}</span>
+        </div>
+      )}
       {/* HEADER */}
       <header
         style={{
@@ -768,7 +828,6 @@ function ProductsPage({
     </section>
   );
 }
-
 /* ---------------- PRODUCT CARD ---------------- */
 
 function ProductCard({
@@ -784,7 +843,7 @@ function ProductCard({
     <div
       style={{
         background: "#fff",
-        borderRadius: "20px",
+        borderRadius: "16px",
         overflow: "hidden",
         border: `1px solid ${colors.pink}`,
         boxShadow: "0 8px 25px rgba(154,119,135,0.10)",
@@ -792,15 +851,36 @@ function ProductCard({
         flexDirection: "column",
       }}
     >
-      <img
-        src={product.image}
-        alt={product.name}
+      {}
+      <div
         style={{
           width: "100%",
           height: "230px",
-          objectFit: "cover",
+          backgroundColor: "#f8f9fa", // Amazon style light background
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: "12px",
         }}
-      />
+      >
+        <img
+          src={
+            product.image ||
+            "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&auto=format&fit=crop&q=60"
+          }
+          alt={product.name}
+          style={{
+            maxHeight: "100%",
+            maxWidth: "100%",
+            objectFit: "contain", 
+            mixBlendMode: "multiply", 
+          }}
+          onError={(e: any) => {
+            e.target.src =
+              "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&auto=format&fit=crop&q=60";
+          }}
+        />
+      </div>
 
       <div
         style={{
@@ -815,33 +895,40 @@ function ProductCard({
             color: colors.mauve,
             fontWeight: "700",
             margin: 0,
+            fontSize: "13px",
           }}
         >
           {product.category}
         </p>
 
-        {/* Title is clamped to 3 lines so cards stay the same height */}
+        {/* Title */}
         <h3
           title={product.name}
           style={{
-            fontSize: "19px",
+            fontSize: "16px",
+            fontWeight: "600",
             display: "-webkit-box",
-            WebkitLineClamp: 3,
+            WebkitLineClamp: 2,
             WebkitBoxOrient: "vertical",
             overflow: "hidden",
+            margin: "8px 0",
+            height: "40px",
           }}
         >
           {product.name}
         </h3>
 
-        <p style={{ color: colors.text }}>⭐ {product.rating} rating</p>
+        <p style={{ color: colors.text, margin: "4px 0", fontSize: "14px" }}>
+          ⭐ {product.rating} rating
+        </p>
 
         <strong
           style={{
-            fontSize: "23px",
+            fontSize: "22px",
             marginTop: "auto",
             paddingBottom: "12px",
             display: "block",
+            color: colors.dark,
           }}
         >
           ₹{Math.round(product.price).toLocaleString("en-IN")}
@@ -985,18 +1072,33 @@ function ProductDetailsPage({
         }}
       >
         {/* PRODUCT IMAGE */}
-        <div>
-          <img
-            src={product.image}
-            alt={product.name}
-            style={{
-              width: "100%",
-              height: "450px",
-              objectFit: "cover",
-              borderRadius: "20px",
-            }}
-          />
-        </div>
+       <div
+  style={{
+    width: "100%",
+    maxHeight: "450px",
+    backgroundColor: "#f8f9fa",
+    borderRadius: "20px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "20px",
+    overflow: "hidden",
+  }}
+>
+  <img
+    src={product.image || product.imageUrl}
+    alt={product.name}
+    style={{
+      maxWidth: "100%",
+      maxHeight: "400px",
+      objectFit: "contain",
+      mixBlendMode: "multiply",
+    }}
+    onError={(e: any) => {
+      e.target.src = "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&auto=format&fit=crop&q=60";
+    }}
+  />
+</div>
 
         {/* PRODUCT INFORMATION */}
         <div style={{ padding: "15px" }}>
