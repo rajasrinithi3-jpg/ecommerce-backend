@@ -281,10 +281,10 @@ class ChatbotService:
             "relaxed_budget": relaxed_budget,
         }
 
-    async def reply(self, message: str, history: list[dict], candidates: list[dict], context: dict) -> tuple[str, str]:
+    async def reply(self, message: str, history: list[dict], candidates: list[dict], context: dict) -> tuple[str, str, Optional[str]]:
         token = os.getenv("GITHUB_MODELS_TOKEN", "").strip()
         if not token:
-            return self.offline_reply(candidates, context), "offline"
+            return self.offline_reply(candidates, context), "offline", "not_configured"
 
         compact_candidates = [
             {
@@ -305,14 +305,25 @@ class ChatbotService:
             "content": f"CANDIDATES: {json.dumps(compact_candidates, ensure_ascii=False)}\nQUESTION: {message}",
         })
 
+        fallback_reason = None
         try:
             response = await request_llm(token, messages)
             text = response["choices"][0]["message"]["content"].strip()
             if text:
-                return text, "ai"
+                return text, "ai", None
+        except httpx.HTTPStatusError as exc:
+            # Safe logging: log status code only, never headers, tokens or bodies
+            status_code = exc.response.status_code if exc.response is not None else 0
+            if status_code in (401, 403):
+                fallback_reason = "provider_rejected"
+            else:
+                fallback_reason = "provider_unavailable"
+        except (httpx.RequestError, httpx.TimeoutException):
+            fallback_reason = "provider_unavailable"
         except Exception:
-            pass
-        return self.offline_reply(candidates, context), "offline"
+            fallback_reason = "provider_unavailable"
+
+        return self.offline_reply(candidates, context), "offline", fallback_reason
 
     def offline_reply(self, candidates: list[dict], context: dict) -> str:
         if not candidates:

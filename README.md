@@ -48,14 +48,14 @@ Open the URL Vite prints (usually http://localhost:5173).
 ## How to test
 
 1. **Backend health** – open http://127.0.0.1:8000/docs (Swagger). Expect:
-   - `GET /products` -> 1000 items, `GET /categories` -> 28
+   - `GET /products` -> 1000 items, `GET /categories` -> 17 (from 28 raw dataset categories, where categories with < 10 products are grouped into 'Other')
    - `GET /products/3/market-insight` -> `BUY_NOW`, discount about -32%, 5 competitors
    - `GET /products/1/recommendations` -> 5 similar products
    - `GET /analytics/overview` -> totals, category breakdown, top discounts, trending
    - `GET /analytics/buyer` -> best_deals, wait_list, top_rated, trending
    - `GET /analytics/seller` (and `?category_id=2`) -> kpis, pricing_opportunities, margin_pressure, competition
 2. **Frontend** – with backend running:
-   - Products page: real products/images, category chips (28 real categories) filter correctly
+   - Products page: real products/images, category chips (17 categories: 16 retained plus 'Other') filter correctly
    - Click a product: Market Insight (buy/wait badge, list vs current price, loss %, competitors),
      reviews, and "You may also like"
    - Click a competitor row: jumps to that product

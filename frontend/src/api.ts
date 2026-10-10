@@ -3,7 +3,7 @@
 // Set VITE_API_BASE_URL in a .env file (see .env.example) e.g.:
 //   VITE_API_BASE_URL=http://192.168.1.23:8000
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
+  import.meta.env.VITE_API_BASE_URL ?? "";
 
 async function fetchJSON<T>(url: string): Promise<T> {
   const response = await fetch(url);
@@ -164,14 +164,32 @@ export async function getProductReviews(id: number) {
   );
 }
 
-export async function addProductReview(id: number, rating: number, comment: string) {
+export async function addProductReview(
+  id: number,
+  rating: number,
+  comment: string,
+  idToken: string
+) {
+  const token = idToken?.trim();
+  if (!token) {
+    throw new Error("You must be logged in to submit a review.");
+  }
   const response = await fetch(`${API_BASE_URL}/products/${id}/reviews`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${token}`,
+    },
     body: JSON.stringify({ rating, comment }),
   });
   if (!response.ok) {
     const body = await response.json().catch(() => null);
+    if (response.status === 401) {
+      throw new Error(body?.detail || "Your session has expired or is invalid. Please log in again.");
+    }
+    if (response.status === 429) {
+      throw new Error(body?.detail || "You have submitted too many reviews. Rate limit is 5 reviews per minute.");
+    }
     throw new Error(body?.detail ?? "Couldn't submit your review.");
   }
   return response.json() as Promise<BackendReview>;
