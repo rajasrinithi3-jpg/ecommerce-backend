@@ -18,6 +18,7 @@ import {
 } from "./api";
 import { useEffect, useState, type FormEvent } from "react";
 import { Analytics } from './Analytics';
+import { useAnalyticsOverview } from "./useAnalyticsOverview";
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
@@ -26,7 +27,7 @@ import {
   updateProfile,
   type User,
 } from "firebase/auth";
-import { auth } from "./firebase";
+import { auth, isFirebaseConfigured } from "./firebase";
 import ChatWidget from "./ChatWidget";
 
 type Product = {
@@ -36,6 +37,7 @@ type Product = {
   price: number;
   rating: number;
   image: string;
+  imageUrl?: string;
   description?: string;
   brand?: string;
   categoryId?: number;
@@ -1247,7 +1249,11 @@ function ProductDetailsPage({
             setReviewSubmitting(true);
             setReviewError(null);
             try {
-              const review = await addProductReview(product.id, reviewRating, reviewComment);
+              if (!auth.currentUser) {
+                throw new Error("You must be logged in to submit a review. Please sign in.");
+              }
+              const idToken = await auth.currentUser.getIdToken();
+              const review = await addProductReview(product.id, reviewRating, reviewComment, idToken);
               setReviews((current) => [...current, review]);
               setReviewComment("");
             } catch (error) {
@@ -1870,36 +1876,7 @@ function SellerDashboardPage({ categories }: { categories: BackendCategory[] }) 
 }
 
 function InsightsPage({ embedded = false }: { embedded?: boolean }) {
-  const [data, setData] = useState<AnalyticsOverview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-
-  // "Real-time": re-query the backend every 30s so the numbers reflect
-  // whatever is currently in the database.
-  useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const overview = await getAnalyticsOverview();
-        if (!cancelled) {
-          setData(overview);
-          setError(null);
-          setLastUpdated(new Date());
-        }
-      } catch (e) {
-        if (!cancelled) setError("Couldn't load analytics from the backend.");
-        console.error(e);
-      }
-    };
-
-    load();
-    const timer = setInterval(load, 30000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, []);
+  const { data, error, lastUpdated } = useAnalyticsOverview();
 
   if (error) {
     return (
@@ -2260,6 +2237,11 @@ function LoginPage({
       return;
     }
 
+    if (!isFirebaseConfigured) {
+      alert("Firebase authentication is not configured in this environment. Please set VITE_FIREBASE_API_KEY in your .env file.");
+      return;
+    }
+
     try {
       await signInWithEmailAndPassword(auth, email, password);
 
@@ -2502,6 +2484,11 @@ function SignupPage({
 
     if (password.length < 6) {
       alert("Password must contain at least 6 characters ❌");
+      return;
+    }
+
+    if (!isFirebaseConfigured) {
+      alert("Firebase authentication is not configured in this environment. Please set VITE_FIREBASE_API_KEY in your .env file.");
       return;
     }
 

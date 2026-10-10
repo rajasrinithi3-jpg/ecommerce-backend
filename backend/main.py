@@ -1,5 +1,9 @@
 import statistics
-from datetime import datetime
+import threading
+import time
+from collections import deque
+from datetime import datetime, timezone
+from typing import List, Literal, Optional, Any
 
 from dotenv import load_dotenv
 
@@ -8,9 +12,9 @@ load_dotenv()
 from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
-from typing import List, Literal, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
+from auth import get_current_user, get_current_seller, AuthenticatedUser
 from chatbot import ChatbotService, ChatRateLimiter
 from src.recommendation.recommender import Recommender
 import models
@@ -31,6 +35,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- Rate Limiters ---
+class ReviewRateLimiter:
+    """
+    Sliding window in-memory rate limiter per authenticated user.
+    Limitations: In-memory counters reset on server restart and are stored per-process
+    (not shared across multi-worker deployments).
+    """
+    def __init__(self, limit: int = 5, window_seconds: int = 60):
+        self.limit = limit
+        self.window_seconds = window_seconds
+        self.requests: dict[str, deque[float]] = {}
+        self.lock = threading.Lock()
+
+    def allow(self, user_id: str, now: float | None = None) -> bool:
+        current = time.monotonic() if now is None else now
+        cutoff = current - self.window_seconds
+        with self.lock:
+            requests = self.requests.setdefault(user_id, deque())
+            while requests and requests[0] <= cutoff:
+                requests.popleft()
+            if len(requests) >= self.limit:
+                return False
+            requests.append(current)
+            return True
+
+review_rate_limiter = ReviewRateLimiter(limit=5, window_seconds=60)
+
 # --- Pydantic Schemas ---
 class ReviewCreate(BaseModel):
     rating: int = Field(ge=1, le=5)
@@ -45,11 +76,25 @@ class ReviewCreate(BaseModel):
         return value
 
 class ProductCreate(BaseModel):
-    title: str
+    title: str = Field(min_length=1)
     description: Optional[str] = None
-    price: float
+    price: float = Field(gt=0, description="Product price must be greater than zero")
     brand: Optional[str] = None
     category_id: int
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_client_supplied_seller_id(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "seller_id" in data:
+            raise ValueError("seller_id must not be supplied by client")
+        return data
+
+    @field_validator("price")
+    @classmethod
+    def price_must_be_positive(cls, value: float) -> float:
+        if value <= 0:
+            raise ValueError("Product price must be greater than zero")
+        return value
 
 class ChatHistoryMessage(BaseModel):
     role: Literal["user", "assistant"]
@@ -96,13 +141,24 @@ def get_product(id: int, db: Session = Depends(get_db)):
 
 # 4. Create Product (Database)
 @app.post("/products", status_code=status.HTTP_201_CREATED)
-def create_product(product: ProductCreate, db: Session = Depends(get_db)):
+def create_product(
+    product: ProductCreate,
+    db: Session = Depends(get_db),
+    seller: AuthenticatedUser = Depends(get_current_seller),
+):
+    category = db.query(models.Category).filter(models.Category.id == product.category_id).first()
+    if not category:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Category not found"
+        )
     new_product = models.Product(
         title=product.title,
         description=product.description,
         price=product.price,
         brand=product.brand,
-        category_id=product.category_id
+        category_id=product.category_id,
+        seller_id=seller.uid,
     )
     db.add(new_product)
     db.commit()
@@ -118,10 +174,22 @@ def get_product_reviews(id: int, db: Session = Depends(get_db)):
     return product.reviews
 
 @app.post("/products/{id}/reviews", status_code=status.HTTP_201_CREATED)
-def create_product_review(id: int, review: ReviewCreate, db: Session = Depends(get_db)):
+def create_product_review(
+    id: int,
+    review: ReviewCreate,
+    db: Session = Depends(get_db),
+    user: AuthenticatedUser = Depends(get_current_user),
+):
     product = db.query(models.Product).filter(models.Product.id == id).first()
     if not product:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+    if not review_rate_limiter.allow(user.uid):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="You have submitted too many reviews. Rate limit is 5 reviews per minute.",
+        )
+
     new_review = models.Review(
         product_id=product.id,
         rating=review.rating,
@@ -234,8 +302,8 @@ async def chat(payload: ChatRequest, request: Request):
 
     history = [item.model_dump() for item in payload.history[-6:]]
     products, context = chatbot_service.retrieve(payload.message, history=history)
-    reply, mode = await chatbot_service.reply(payload.message, history, products, context)
-    return {
+    reply, mode, fallback_reason = await chatbot_service.reply(payload.message, history, products, context)
+    response_data = {
         "reply": reply,
         "products": [
             {
@@ -252,6 +320,9 @@ async def chat(payload: ChatRequest, request: Request):
         ],
         "mode": mode,
     }
+    if fallback_reason is not None:
+        response_data["fallback_reason"] = fallback_reason
+    return response_data
 
 
 @app.get("/products/{id}/market-insight")
@@ -262,7 +333,8 @@ def get_market_insight(id: int, db: Session = Depends(get_db)):
 
     listing_age_days = None
     if product.date_first_available:
-        listing_age_days = (datetime.utcnow() - product.date_first_available).days
+        now_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+        listing_age_days = (now_naive - product.date_first_available).days
 
     profit_loss = {
         "current_price": product.price,
@@ -379,7 +451,7 @@ def get_analytics_overview(db: Session = Depends(get_db)):
     ]
 
     return {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         "total_products": total_products,
         "total_categories": len(categories),
         "average_rating": average_rating,
@@ -437,7 +509,7 @@ def get_buyer_dashboard(db: Session = Depends(get_db)):
     )[:8]
 
     return {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         "best_deals": [brief(p) for p in best_deals],
         "wait_list": [brief(p) for p in wait_list],
         "top_rated": [brief(p) for p in top_rated],
@@ -536,7 +608,7 @@ def get_seller_dashboard(category_id: Optional[int] = None, db: Session = Depend
 
     scope_prices = [p.price for p in scope]
     return {
-        "generated_at": datetime.utcnow().isoformat() + "Z",
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "Z",
         "scope": categories.get(category_id, "All categories"),
         "kpis": {
             "product_count": len(scope),

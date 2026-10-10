@@ -1,5 +1,5 @@
-import { useEffect, useState, type CSSProperties } from "react";
-import { getAnalyticsOverview, type AnalyticsOverview } from "./api";
+import { type CSSProperties } from "react";
+import { useAnalyticsOverview } from "./useAnalyticsOverview";
 import {
   Bar,
   BarChart,
@@ -38,37 +38,7 @@ const chartGrid: CSSProperties = {
 const chartColors = ["#9A7787", "#E4AFB0", "#C69DAA", "#806F78", "#FED7BF"];
 
 export function Analytics() {
-  const [data, setData] = useState<AnalyticsOverview | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const overview = await getAnalyticsOverview();
-        if (!cancelled) {
-          setData(overview);
-          setError(null);
-          setLastUpdated(new Date());
-        }
-      } catch (loadError) {
-        if (!cancelled) {
-          setError("Couldn't load analytics from the backend.");
-        }
-        console.error("Error loading analytics:", loadError);
-      }
-    };
-
-    void load();
-    const timer = window.setInterval(() => void load(), 30000);
-
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, []);
+  const { data, error, lastUpdated } = useAnalyticsOverview();
 
   const sectionStyle: CSSProperties = {
     marginTop: "45px",
