@@ -8,26 +8,42 @@ import {
   getAnalyticsOverview,
   getBuyerDashboard,
   getSellerDashboard,
+  getCurrentUser,
+  registerRole,
+  ApiError,
+  getSellerProducts,
+  addSellerProduct,
+  updateSellerProduct,
+  deleteSellerProduct,
+  uploadSellerProductImage,
+  getBackendAssetUrl,
+  getMyOrders,
+  createOrder,
+  type BackendProduct,
+  type BackendCategory,
+  type SellerProductInput,
+  type AuthRole,
+  type AuthUser,
   type BuyerDashboard as BuyerDashboardData,
   type SellerDashboard as SellerDashboardData,
-  type BackendCategory,
   type BackendReview,
   type Recommendation,
   type MarketInsight,
   type AnalyticsOverview,
+  type Order,
 } from "./api";
 import { useEffect, useState, type FormEvent } from "react";
 import { Analytics } from './Analytics';
-import { useAnalyticsOverview } from "./useAnalyticsOverview";
 import {
   createUserWithEmailAndPassword,
   signInWithEmailAndPassword,
+  sendPasswordResetEmail,
   signOut,
   onAuthStateChanged,
   updateProfile,
   type User,
 } from "firebase/auth";
-import { auth, isFirebaseConfigured } from "./firebase";
+import { auth } from "./firebase";
 import ChatWidget from "./ChatWidget";
 
 type Product = {
@@ -37,7 +53,6 @@ type Product = {
   price: number;
   rating: number;
   image: string;
-  imageUrl?: string;
   description?: string;
   brand?: string;
   categoryId?: number;
@@ -49,36 +64,16 @@ type Page =
   | "analytics"
   | "buyer"
   | "seller"
+  | "orders"
   | "cart"
+  | "checkout"
   | "login"
   | "signup"
-  | "details";
+  | "details"
+  | "forbidden";
 
 
-type Role = "buyer" | "seller";
-
-// V1 role handling: the role is remembered per Firebase user in this
-// browser (localStorage). It gates the UI only - it is NOT server-side
-// security. Real enforcement would need Firebase custom claims or a
-// verified-token check on the FastAPI side.
-const ROLE_KEY = (uid: string) => `commerceiq_role_${uid}`;
-
-function loadRole(uid: string): Role | null {
-  try {
-    const value = localStorage.getItem(ROLE_KEY(uid));
-    return value === "buyer" || value === "seller" ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveRole(uid: string, role: Role) {
-  try {
-    localStorage.setItem(ROLE_KEY(uid), role);
-  } catch {
-    /* storage unavailable - role just won't persist */
-  }
-}
+type Role = AuthRole;
 
 // Fallback image used whenever the backend doesn't have a product image.
 const FALLBACK_IMAGE =
@@ -95,29 +90,21 @@ const colors = {
 
 function App() {
   const [page, setPage] = useState<Page>("home");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [category, setCategory] = useState("All");
   const [search, setSearch] = useState("");
-  const [cartItems, setCartItems] = useState<Product[]>(() => {
-  try {
-    const savedCart = localStorage.getItem('commerceiq_cart');
-    return savedCart ? JSON.parse(savedCart) : [];
-  } catch (e) {
-    return [];
-  }
-});
-
-useEffect(() => {
-  localStorage.setItem('commerceiq_cart', JSON.stringify(cartItems));
-}, [cartItems]);
+  const [cartItems, setCartItems] = useState<Product[]>([]);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [role, setRoleState] = useState<Role | null>(null);
-  const [backendProducts, setBackendProducts] = useState<any[]>([]);
+  const [authReady, setAuthReady] = useState(false);
+  const [roleError, setRoleError] = useState<string | null>(null);
+  const [accessDeniedMessage, setAccessDeniedMessage] = useState("");
+  const [backendProducts, setBackendProducts] = useState<BackendProduct[]>([]);
   const [categories, setCategories] = useState<BackendCategory[]>([]);
   const [dataError, setDataError] = useState<string | null>(null);
-  const [toastMessage, setToastMessage] = useState<string | null>(null);
-useEffect(() => {
-  const loadProducts = async () => {
+
+const refreshCatalog = async () => {
     try {
       const data = await getProducts();
       setBackendProducts(data);
@@ -128,9 +115,10 @@ useEffect(() => {
         "Couldn't reach the backend. Check that the API server is running and reachable."
       );
     }
-  };
+};
 
-  loadProducts();
+useEffect(() => {
+  void refreshCatalog();
 }, []);
 
 useEffect(() => {
@@ -150,42 +138,20 @@ useEffect(() => {
 // show up on cards, the details page, and the filter chips.
 const categoryNameById = new Map(categories.map((c) => [c.id, c.name]));
 
-const backendMappedProducts: Product[] = backendProducts.map((product: any, index: number) => {
-  const categoryName =
+const backendMappedProducts: Product[] = backendProducts.map((product) => ({
+  id: Number(product.id),
+  name: product.title || "Untitled Product",
+  category:
     categoryNameById.get(product.category_id) ??
-    `Category ${product.category_id ?? "Unknown"}`;
+    `Category ${product.category_id ?? "Unknown"}`,
+  categoryId: product.category_id,
+  price: Number(product.price ?? 0),
+  rating: Number(product.rating ?? 4.5),
+  image: getBackendAssetUrl(product.image) || FALLBACK_IMAGE,
+  description: product.description || "",
+  brand: product.brand || "",
+}));
 
-  // Category-wise high quality Unsplash fallback images
-  const categoryImages: Record<string, string> = {
-    "Clothing, Shoes & Jewelry": "https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=500&auto=format&fit=crop&q=60",
-    "Tools & Home Improvement": "https://images.unsplash.com/photo-1581092160607-ee22621dd758?w=500&auto=format&fit=crop&q=60",
-    "Automotive": "https://images.unsplash.com/photo-1511919884226-fd3cad34687c?w=500&auto=format&fit=crop&q=60",
-    "Office Products": "https://images.unsplash.com/photo-1583485088034-697b5bc54ccd?w=500&auto=format&fit=crop&q=60",
-    "Electronics": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e?w=500&auto=format&fit=crop&q=60",
-  };
-
-  const dynamicFallback =
-    categoryImages[categoryName] ||
-    `https://picsum.photos/seed/${product.id || index}/500/300`;
-
-  return {
-    id: Number(product.id),
-    name: product.title || "Untitled Product",
-    category: categoryName,
-    categoryId: product.category_id,
-    price: Number(product.price ?? 0),
-    signal: product.signal,
-    signalLabel: product.signal_label,
-    buyLogic: product.buy_logic,
-    chartData: product.chart_data,
-    sellerId: product.seller_id,
-    rating: product.rating ?? 4.0,
-    reviewCount: product.review_count ?? 0,
-    image: product.image_url || product.image || dynamicFallback,
-    imageUrl: product.image_url || product.image || dynamicFallback,
-    description: product.description,
-  };
-});
 const categoryOptions = ["All", ...categories.map((c) => c.name)];
 
 const filteredProducts = backendMappedProducts.filter((product) => {
@@ -200,24 +166,80 @@ const filteredProducts = backendMappedProducts.filter((product) => {
   return matchesSearch && matchesCategory;
 });
 useEffect(() => {
-  const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+  let active = true;
+  let generation = 0;
+  const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+    const currentGeneration = ++generation;
     setUser(currentUser);
-    setRoleState(currentUser ? loadRole(currentUser.uid) : null);
+    setRoleState(null);
+    setRoleError(null);
+    if (!currentUser) {
+      setAuthReady(true);
+      return;
+    }
+
+    setAuthReady(false);
+    try {
+      const serverUser = await getCurrentUser();
+      if (active && currentGeneration === generation) {
+        setRoleState(serverUser.role);
+      }
+    } catch (error) {
+      if (active && currentGeneration === generation) {
+        setRoleError(
+          error instanceof ApiError && error.status === 403
+            ? "This account has no registered role yet. Choose one to finish registration."
+            : "We couldn't verify your account with the backend. Please try again."
+        );
+      }
+    } finally {
+      if (active && currentGeneration === generation) setAuthReady(true);
+    }
   });
 
-  return unsubscribe;
+  return () => {
+    active = false;
+    unsubscribe();
+  };
 }, []);
 
-const setRole = (newRole: Role) => {
-  if (user) saveRole(user.uid, newRole);
-  setRoleState(newRole);
+useEffect(() => {
+  const handleApiError = (event: Event) => {
+    const { status: responseStatus, message } = (event as CustomEvent<{
+      status: number;
+      message: string;
+    }>).detail;
+    if (responseStatus === 401) {
+      setRoleState(null);
+      setPage("login");
+    } else if (responseStatus === 403) {
+      setAccessDeniedMessage(message);
+      setPage("forbidden");
+    }
+  };
+  window.addEventListener("commerceiq:api-error", handleApiError);
+  return () => window.removeEventListener("commerceiq:api-error", handleApiError);
+}, []);
+
+const registerAccountRole = async (newRole: Role) => {
+  try {
+    const serverUser = await registerRole(newRole);
+    setRoleState(serverUser.role);
+    setRoleError(null);
+  } catch (error) {
+    setRoleError(error instanceof Error ? error.message : "Role registration failed.");
+  }
+};
+
+const acceptRegisteredUser = (serverUser: AuthUser) => {
+  setRoleState(serverUser.role);
+  setRoleError(null);
+  setAuthReady(true);
 };
 
   const addToCart = (product: Product) => {
-  setCartItems((items) => [...items, product]);
-  setToastMessage(`${product.name} added to cart!`);
-  setTimeout(() => setToastMessage(null), 3000);
-};
+    setCartItems((items) => [...items, product]);
+  };
 
   const removeFromCart = (index: number) => {
     setCartItems((items) => items.filter((_, i) => i !== index));
@@ -225,6 +247,48 @@ const setRole = (newRole: Role) => {
 
   const clearCart = () => {
     setCartItems([]);
+  };
+
+  const handleCheckout = async (
+    customerName: string,
+    phone: string,
+    shippingAddress: string
+  ) => {
+    if (!user) {
+      throw new Error("Please log in before placing your order.");
+    }
+
+    if (role !== "buyer") {
+      throw new Error("Only buyer accounts can place orders.");
+    }
+
+    if (cartItems.length === 0) {
+      throw new Error("Your cart is empty.");
+    }
+
+    const itemsByProduct = new Map<number, number>();
+    for (const product of cartItems) {
+      itemsByProduct.set(product.id, (itemsByProduct.get(product.id) ?? 0) + 1);
+    }
+
+    try {
+      await createOrder({
+        customer_name: customerName.trim(),
+        phone: phone.trim(),
+        shipping_address: shippingAddress.trim(),
+        items: [...itemsByProduct.entries()].map(([product_id, quantity]) => ({
+          product_id,
+          quantity,
+        })),
+      });
+
+      clearCart();
+      setPage("orders");
+    } catch (error) {
+      throw new Error(
+        error instanceof Error ? error.message : "Couldn't place your order."
+      );
+    }
   };
 
   return (
@@ -236,33 +300,9 @@ const setRole = (newRole: Role) => {
         fontFamily: "Arial, sans-serif",
       }}
     >
-   {toastMessage && (
-        <div
-          style={{
-            position: "fixed",
-            top: "20px",
-            left: "50%",
-            transform: "translateX(-50%)",
-            backgroundColor: "#131921",
-            color: "#ffffff",
-            padding: "8px 18px",
-            borderRadius: "8px",
-            fontSize: "13px",
-            fontWeight: "500",
-            boxShadow: "0 4px 15px rgba(0,0,0,0.25)",
-            zIndex: 9999,
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            border: "1px solid #232f3e",
-          }}
-        >
-          <span style={{ color: "#25d366", fontWeight: "bold" }}>✓</span>
-          <span>{toastMessage}</span>
-        </div>
-      )}
       {/* HEADER */}
       <header
+        className="site-header"
         style={{
           background: "#fff",
           borderBottom: `1px solid ${colors.pink}`,
@@ -271,20 +311,13 @@ const setRole = (newRole: Role) => {
           zIndex: 10,
         }}
       >
-        <div
-          style={{
-            maxWidth: "1200px",
-            margin: "auto",
-            padding: "18px 25px",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: "20px",
-            flexWrap: "wrap",
-          }}
-        >
+        <div className="site-header-inner">
           <button
-            onClick={() => setPage("home")}
+            onClick={() => {
+              setPage("home");
+              setMobileMenuOpen(false);
+            }}
+            className="site-brand"
             style={{
               border: "none",
               background: "none",
@@ -297,12 +330,23 @@ const setRole = (newRole: Role) => {
             🛍️ CommerceIQ AI
           </button>
 
+          <button
+            type="button"
+            className="mobile-nav-toggle"
+            aria-label={mobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
+            aria-expanded={mobileMenuOpen}
+            aria-controls="site-navigation"
+            onClick={() => setMobileMenuOpen((open) => !open)}
+          >
+            <span />
+            <span />
+            <span />
+          </button>
+
           <nav
-            style={{
-              display: "flex",
-              gap: "8px",
-              flexWrap: "wrap",
-            }}
+            id="site-navigation"
+            className={`site-nav${mobileMenuOpen ? " is-open" : ""}`}
+            onClick={() => setMobileMenuOpen(false)}
           >
             <NavButton text="Home" onClick={() => setPage("home")} />
             <NavButton
@@ -317,6 +361,12 @@ const setRole = (newRole: Role) => {
               text="Buyer Dashboard"
               onClick={() => setPage("buyer")}
             />
+            {user && (
+              <NavButton
+                text="My Orders"
+                onClick={() => setPage("orders")}
+              />
+            )}
             <NavButton
               text="Seller Dashboard"
               onClick={() => setPage("seller")}
@@ -444,7 +494,9 @@ const setRole = (newRole: Role) => {
     required="buyer"
     user={user}
     role={role}
-    onSetRole={setRole}
+    authReady={authReady}
+    roleError={roleError}
+    onRegisterRole={registerAccountRole}
     onLogin={() => setPage("login")}
     onSignup={() => setPage("signup")}
   >
@@ -465,11 +517,31 @@ const setRole = (newRole: Role) => {
     required="seller"
     user={user}
     role={role}
-    onSetRole={setRole}
+    authReady={authReady}
+    roleError={roleError}
+    onRegisterRole={registerAccountRole}
     onLogin={() => setPage("login")}
     onSignup={() => setPage("signup")}
   >
-    <SellerDashboardPage categories={categories} />
+    <SellerDashboardPage
+      categories={categories}
+      onCatalogChanged={refreshCatalog}
+    />
+  </RoleGate>
+)}
+
+{page === "orders" && (
+  <RoleGate
+    required="buyer"
+    user={user}
+    role={role}
+    authReady={authReady}
+    roleError={roleError}
+    onRegisterRole={registerAccountRole}
+    onLogin={() => setPage("login")}
+    onSignup={() => setPage("signup")}
+  >
+    <OrderHistoryPage />
   </RoleGate>
 )}
 
@@ -488,6 +560,18 @@ const setRole = (newRole: Role) => {
     cartItems={cartItems}
     onRemove={removeFromCart}
     onClear={clearCart}
+    onContinue={() => setPage("checkout")}
+  />
+)}
+
+{page === "checkout" && (
+  <CheckoutPage
+    cartItems={cartItems}
+    user={user}
+    role={role}
+    onBack={() => setPage("cart")}
+    onLogin={() => setPage("login")}
+    onPlaceOrder={handleCheckout}
   />
 )}
 
@@ -502,7 +586,16 @@ const setRole = (newRole: Role) => {
   <SignupPage
     onLogin={() => setPage("login")}
     onHome={() => setPage("home")}
+    onRegistered={acceptRegisteredUser}
   />
+)}
+
+{page === "forbidden" && (
+  <section role="alert" style={{ textAlign: "center", padding: "48px 20px" }}>
+    <h1>Not allowed for your role</h1>
+    <p style={{ color: colors.text }}>{accessDeniedMessage}</p>
+    <button onClick={() => setPage("home")}>Return home</button>
+  </section>
 )}
       </main>
 
@@ -830,6 +923,7 @@ function ProductsPage({
     </section>
   );
 }
+
 /* ---------------- PRODUCT CARD ---------------- */
 
 function ProductCard({
@@ -845,7 +939,7 @@ function ProductCard({
     <div
       style={{
         background: "#fff",
-        borderRadius: "16px",
+        borderRadius: "20px",
         overflow: "hidden",
         border: `1px solid ${colors.pink}`,
         boxShadow: "0 8px 25px rgba(154,119,135,0.10)",
@@ -853,36 +947,15 @@ function ProductCard({
         flexDirection: "column",
       }}
     >
-      {}
-      <div
+      <img
+        src={product.image}
+        alt={product.name}
         style={{
           width: "100%",
           height: "230px",
-          backgroundColor: "#f8f9fa", // Amazon style light background
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          padding: "12px",
+          objectFit: "cover",
         }}
-      >
-        <img
-          src={
-            product.image ||
-            "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&auto=format&fit=crop&q=60"
-          }
-          alt={product.name}
-          style={{
-            maxHeight: "100%",
-            maxWidth: "100%",
-            objectFit: "contain", 
-            mixBlendMode: "multiply", 
-          }}
-          onError={(e: any) => {
-            e.target.src =
-              "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&auto=format&fit=crop&q=60";
-          }}
-        />
-      </div>
+      />
 
       <div
         style={{
@@ -897,40 +970,33 @@ function ProductCard({
             color: colors.mauve,
             fontWeight: "700",
             margin: 0,
-            fontSize: "13px",
           }}
         >
           {product.category}
         </p>
 
-        {/* Title */}
+        {/* Title is clamped to 3 lines so cards stay the same height */}
         <h3
           title={product.name}
           style={{
-            fontSize: "16px",
-            fontWeight: "600",
+            fontSize: "19px",
             display: "-webkit-box",
-            WebkitLineClamp: 2,
+            WebkitLineClamp: 3,
             WebkitBoxOrient: "vertical",
             overflow: "hidden",
-            margin: "8px 0",
-            height: "40px",
           }}
         >
           {product.name}
         </h3>
 
-        <p style={{ color: colors.text, margin: "4px 0", fontSize: "14px" }}>
-          ⭐ {product.rating} rating
-        </p>
+        <p style={{ color: colors.text }}>⭐ {product.rating} rating</p>
 
         <strong
           style={{
-            fontSize: "22px",
+            fontSize: "23px",
             marginTop: "auto",
             paddingBottom: "12px",
             display: "block",
-            color: colors.dark,
           }}
         >
           ₹{Math.round(product.price).toLocaleString("en-IN")}
@@ -1074,33 +1140,18 @@ function ProductDetailsPage({
         }}
       >
         {/* PRODUCT IMAGE */}
-       <div
-  style={{
-    width: "100%",
-    maxHeight: "450px",
-    backgroundColor: "#f8f9fa",
-    borderRadius: "20px",
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: "20px",
-    overflow: "hidden",
-  }}
->
-  <img
-    src={product.image || product.imageUrl}
-    alt={product.name}
-    style={{
-      maxWidth: "100%",
-      maxHeight: "400px",
-      objectFit: "contain",
-      mixBlendMode: "multiply",
-    }}
-    onError={(e: any) => {
-      e.target.src = "https://images.unsplash.com/photo-1523275335684-37898b6baf30?w=500&auto=format&fit=crop&q=60";
-    }}
-  />
-</div>
+        <div>
+          <img
+            src={product.image}
+            alt={product.name}
+            style={{
+              width: "100%",
+              height: "450px",
+              objectFit: "cover",
+              borderRadius: "20px",
+            }}
+          />
+        </div>
 
         {/* PRODUCT INFORMATION */}
         <div style={{ padding: "15px" }}>
@@ -1249,11 +1300,7 @@ function ProductDetailsPage({
             setReviewSubmitting(true);
             setReviewError(null);
             try {
-              if (!auth.currentUser) {
-                throw new Error("You must be logged in to submit a review. Please sign in.");
-              }
-              const idToken = await auth.currentUser.getIdToken();
-              const review = await addProductReview(product.id, reviewRating, reviewComment, idToken);
+              const review = await addProductReview(product.id, reviewRating, reviewComment);
               setReviews((current) => [...current, review]);
               setReviewComment("");
             } catch (error) {
@@ -1487,7 +1534,9 @@ function RoleGate({
   required,
   user,
   role,
-  onSetRole,
+  authReady,
+  roleError,
+  onRegisterRole,
   onLogin,
   onSignup,
   children,
@@ -1495,7 +1544,9 @@ function RoleGate({
   required: Role;
   user: User | null;
   role: Role | null;
-  onSetRole: (role: Role) => void;
+  authReady: boolean;
+  roleError: string | null;
+  onRegisterRole: (role: Role) => void;
   onLogin: () => void;
   onSignup: () => void;
   children: React.ReactNode;
@@ -1548,37 +1599,36 @@ function RoleGate({
     );
   }
 
-  // Gate 2: signed in, but hasn't picked a role yet.
+  if (!authReady) {
+    return <p role="status">Checking your account...</p>;
+  }
+
+  // A role is chosen only when the authenticated account is first registered.
   if (!role) {
     return (
       <div style={card}>
         <div style={{ fontSize: "40px" }}>👋</div>
-        <h2>How will you use CommerceIQ?</h2>
+        <h2>Complete account registration</h2>
         <p style={{ color: colors.text }}>
-          Pick a role to continue. You can switch it later from a dashboard gate.
+          {roleError || "Choose the role for this account."}
         </p>
         <div style={{ display: "flex", gap: "10px", justifyContent: "center", marginTop: "20px" }}>
-          <button style={primary} onClick={() => onSetRole("buyer")}>🛒 I'm a Buyer</button>
-          <button style={primary} onClick={() => onSetRole("seller")}>🏪 I'm a Seller</button>
+          <button style={primary} onClick={() => onRegisterRole("buyer")}>🛒 I'm a Buyer</button>
+          <button style={primary} onClick={() => onRegisterRole("seller")}>🏪 I'm a Seller</button>
         </div>
       </div>
     );
   }
 
-  // Gate 3: wrong role for this dashboard.
+  // The server remains authoritative even if a dashboard is reached directly.
   if (role !== required) {
     return (
       <div style={card}>
         <div style={{ fontSize: "40px" }}>{icon}</div>
-        <h2>{label}s only</h2>
+        <h2>Not allowed for your role</h2>
         <p style={{ color: colors.text }}>
-          You're signed in as a {role}. The {label.toLowerCase()} dashboard is for {label.toLowerCase()}s.
+          You're signed in as a {role}. This dashboard is for {label.toLowerCase()}s.
         </p>
-        <div style={{ marginTop: "20px" }}>
-          <button style={primary} onClick={() => onSetRole(required)}>
-            Switch to {label} role
-          </button>
-        </div>
       </div>
     );
   }
@@ -1729,7 +1779,403 @@ const signalStyles: Record<string, { label: string; color: string }> = {
   REDUCE_PRICE: { label: "📉 Reduce price", color: "#c62828" },
 };
 
-function SellerDashboardPage({ categories }: { categories: BackendCategory[] }) {
+
+/* ---------------- SELLER PRODUCT MANAGEMENT ---------------- */
+
+function SellerProductManager({
+  categories,
+  onCatalogChanged,
+}: {
+  categories: BackendCategory[];
+  onCatalogChanged: () => Promise<void>;
+}) {
+  const [products, setProducts] = useState<BackendProduct[]>([]);
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [brand, setBrand] = useState("");
+  const [price, setPrice] = useState("");
+  const [categoryId, setCategoryId] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [uploadingProductId, setUploadingProductId] = useState<number | null>(null);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const fieldStyle: React.CSSProperties = {
+    width: "100%",
+    boxSizing: "border-box",
+    padding: "12px",
+    border: `1px solid ${colors.pink}`,
+    borderRadius: "10px",
+    fontSize: "15px",
+    background: "#fff",
+    color: colors.dark,
+  };
+
+  const buttonStyle: React.CSSProperties = {
+    padding: "10px 16px",
+    border: "none",
+    borderRadius: "9px",
+    background: colors.mauve,
+    color: "#fff",
+    cursor: "pointer",
+    fontWeight: 700,
+  };
+
+  async function refreshProducts() {
+    try {
+      const result = await getSellerProducts();
+      setProducts(result);
+      setError("");
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not load your products."
+      );
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      try {
+        const result = await getSellerProducts();
+        if (!cancelled) {
+          setProducts(result);
+          setError("");
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : "Could not load your products."
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  function resetForm() {
+    setEditingId(null);
+    setTitle("");
+    setDescription("");
+    setBrand("");
+    setPrice("");
+    setCategoryId("");
+  }
+
+  function startEdit(product: BackendProduct) {
+    setEditingId(product.id);
+    setTitle(product.title);
+    setDescription(product.description ?? "");
+    setBrand(product.brand ?? "");
+    setPrice(String(product.price));
+    setCategoryId(String(product.category_id));
+    setMessage("");
+    setError("");
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+
+    const numericPrice = Number(price);
+    const numericCategory = Number(categoryId);
+
+    if (!title.trim()) {
+      setError("Enter a product name.");
+      return;
+    }
+    if (!Number.isFinite(numericPrice) || numericPrice <= 0) {
+      setError("Enter a valid price greater than zero.");
+      return;
+    }
+    if (!categories.some((category) => category.id === numericCategory)) {
+      setError("Please select a valid category.");
+      return;
+    }
+
+    const payload: SellerProductInput = {
+      title: title.trim(),
+      description: description.trim() || null,
+      brand: brand.trim() || null,
+      price: numericPrice,
+      category_id: numericCategory,
+    };
+
+    setLoading(true);
+    try {
+      if (editingId !== null) {
+        await updateSellerProduct(editingId, payload);
+        setMessage("Product updated successfully!");
+      } else {
+        await addSellerProduct(payload);
+        setMessage("Product added successfully!");
+      }
+
+      resetForm();
+      await refreshProducts();
+      await onCatalogChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save the product.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleDelete(product: BackendProduct) {
+    const confirmed = window.confirm(
+      `Delete "${product.title}"? This action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setError("");
+    setMessage("");
+    setLoading(true);
+    try {
+      await deleteSellerProduct(product.id);
+      if (editingId === product.id) resetForm();
+      setMessage("Product deleted successfully!");
+      await refreshProducts();
+      await onCatalogChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not delete the product.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleImageUpload(productId: number, file: File) {
+    setError("");
+    setMessage("");
+
+    if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) {
+      setError("Choose a JPEG, PNG, or WebP image.");
+      return;
+    }
+    if (file.size > 5 * 1024 * 1024) {
+      setError("Image must be 5 MB or smaller.");
+      return;
+    }
+
+    setUploadingProductId(productId);
+    try {
+      await uploadSellerProductImage(productId, file);
+      setMessage("Product image uploaded successfully!");
+      await refreshProducts();
+      await onCatalogChanged();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not upload the product image.");
+    } finally {
+      setUploadingProductId(null);
+    }
+  }
+
+  return (
+    <section style={{ marginTop: "36px" }}>
+      <h2 style={{ fontSize: "28px" }}>📦 Manage My Products</h2>
+      <p style={{ color: colors.text }}>
+        Add listings or edit and delete products belonging to your seller account.
+      </p>
+
+      <form
+        onSubmit={handleSubmit}
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))",
+          gap: "14px",
+          padding: "22px",
+          border: `1px solid ${colors.pink}`,
+          borderRadius: "16px",
+          background: "#fff",
+        }}
+      >
+        <label style={{ display: "grid", gap: "6px" }}>
+          Product name *
+          <input
+            style={fieldStyle}
+            value={title}
+            onChange={(event) => setTitle(event.target.value)}
+            maxLength={250}
+            required
+            placeholder="Enter product name"
+          />
+        </label>
+
+        <label style={{ display: "grid", gap: "6px" }}>
+          Brand
+          <input
+            style={fieldStyle}
+            value={brand}
+            onChange={(event) => setBrand(event.target.value)}
+            maxLength={150}
+            placeholder="Enter brand"
+          />
+        </label>
+
+        <label style={{ display: "grid", gap: "6px" }}>
+          Price (₹) *
+          <input
+            style={fieldStyle}
+            type="number"
+            min="0.01"
+            step="0.01"
+            value={price}
+            onChange={(event) => setPrice(event.target.value)}
+            required
+            placeholder="Enter price"
+          />
+        </label>
+
+        <label style={{ display: "grid", gap: "6px" }}>
+          Category *
+          <select
+            style={fieldStyle}
+            value={categoryId}
+            onChange={(event) => setCategoryId(event.target.value)}
+            required
+          >
+            <option value="">Select category</option>
+            {categories.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label style={{ display: "grid", gap: "6px", gridColumn: "1 / -1" }}>
+          Description
+          <textarea
+            style={{ ...fieldStyle, minHeight: "100px" }}
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            placeholder="Describe your product"
+          />
+        </label>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: "10px" }}>
+          <button type="submit" disabled={loading} style={buttonStyle}>
+            {loading
+              ? "Please wait..."
+              : editingId !== null
+                ? "Save Changes"
+                : "Add Product"}
+          </button>
+
+          {editingId !== null && (
+            <button
+              type="button"
+              onClick={resetForm}
+              style={{ ...buttonStyle, background: "#777" }}
+            >
+              Cancel Edit
+            </button>
+          )}
+        </div>
+      </form>
+
+      {error && <p role="alert" style={{ color: "#c62828" }}>{error}</p>}
+      {message && <p role="status" style={{ color: "#2e7d32" }}>{message}</p>}
+
+      <h3 style={{ marginTop: "28px" }}>Your listings ({products.length})</h3>
+      {loading && products.length === 0 && <p>Loading your products...</p>}
+      {!loading && products.length === 0 && !error && (
+        <p style={{ color: colors.text }}>
+          You have no products yet. Add your first product above.
+        </p>
+      )}
+
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+          gap: "16px",
+          marginTop: "16px",
+        }}
+      >
+        {products.map((product) => (
+          <article
+            key={product.id}
+            style={{
+              border: `1px solid ${colors.pink}`,
+              borderRadius: "14px",
+              padding: "18px",
+              background: "#fff",
+              minWidth: 0,
+            }}
+          >
+            {product.image && (
+              <img
+                className="seller-product-image"
+                src={getBackendAssetUrl(product.image)}
+                alt={product.title}
+              />
+            )}
+            <h4 style={{ marginTop: 0, overflowWrap: "anywhere" }}>
+              {product.title}
+            </h4>
+            <p style={{ color: colors.text }}>{product.brand || "No brand"}</p>
+            <p style={{ fontSize: "20px", fontWeight: 700 }}>
+              ₹{Number(product.price).toLocaleString("en-IN")}
+            </p>
+            <p style={{ color: colors.text }}>
+              {categories.find((category) => category.id === product.category_id)?.name
+                ?? `Category ${product.category_id}`}
+            </p>
+            <p style={{ color: colors.text, overflowWrap: "anywhere" }}>
+              {product.description || "No description"}
+            </p>
+            <label className="seller-image-upload">
+              {uploadingProductId === product.id ? "Uploading image..." : "Upload image"}
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                disabled={uploadingProductId !== null}
+                onChange={(event) => {
+                  const file = event.currentTarget.files?.[0];
+                  if (file) void handleImageUpload(product.id, file);
+                  event.currentTarget.value = "";
+                }}
+              />
+            </label>
+            <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+              <button type="button" onClick={() => startEdit(product)} style={buttonStyle}>
+                Edit
+              </button>
+              <button
+                type="button"
+                disabled={loading}
+                onClick={() => void handleDelete(product)}
+                style={{ ...buttonStyle, background: "#c62828" }}
+              >
+                Delete
+              </button>
+            </div>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+
+function SellerDashboardPage({
+  categories,
+  onCatalogChanged,
+}: {
+  categories: BackendCategory[];
+  onCatalogChanged: () => Promise<void>;
+}) {
   const [categoryId, setCategoryId] = useState<number | undefined>(undefined);
   const { data, error } = useAutoRefresh<SellerDashboardData>(
     () => getSellerDashboard(categoryId),
@@ -1741,6 +2187,10 @@ function SellerDashboardPage({ categories }: { categories: BackendCategory[] }) 
   return (
     <section>
       <h1 style={{ fontSize: "42px" }}>Seller Dashboard 🏪</h1>
+      <SellerProductManager
+        categories={categories}
+        onCatalogChanged={onCatalogChanged}
+      />
       <p style={{ color: colors.text }}>
         Market view: pricing, margin pressure and competition. Refreshes every 30s.
       </p>
@@ -1876,7 +2326,36 @@ function SellerDashboardPage({ categories }: { categories: BackendCategory[] }) 
 }
 
 function InsightsPage({ embedded = false }: { embedded?: boolean }) {
-  const { data, error, lastUpdated } = useAnalyticsOverview();
+  const [data, setData] = useState<AnalyticsOverview | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+
+  // "Real-time": re-query the backend every 30s so the numbers reflect
+  // whatever is currently in the database.
+  useEffect(() => {
+    let cancelled = false;
+
+    const load = async () => {
+      try {
+        const overview = await getAnalyticsOverview();
+        if (!cancelled) {
+          setData(overview);
+          setError(null);
+          setLastUpdated(new Date());
+        }
+      } catch (e) {
+        if (!cancelled) setError("Couldn't load analytics from the backend.");
+        console.error(e);
+      }
+    };
+
+    load();
+    const timer = setInterval(load, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, []);
 
   if (error) {
     return (
@@ -2091,10 +2570,12 @@ function CartPage({
   cartItems,
   onRemove,
   onClear,
+  onContinue,
 }: {
   cartItems: Product[];
   onRemove: (index: number) => void;
   onClear: () => void;
+  onContinue: () => void;
 }) {
   const total = cartItems.reduce(
     (sum, product) => sum + product.price,
@@ -2190,27 +2671,362 @@ function CartPage({
               border: `1px solid ${colors.pink}`,
             }}
           >
-            <div style={{ display: "flex", justifyContent: "space-between" }}>
-  <strong>Total</strong>
-  ₹{total.toLocaleString("en-IN")}
-</div>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "20px" }}>
+              <strong>Total</strong>
+              <span>₹{total.toLocaleString("en-IN")}</span>
+            </div>
 
-            <button
-              onClick={onClear}
-              style={{
-                padding: "12px 20px",
-                borderRadius: "10px",
-                border: "none",
-                background: colors.mauve,
-                color: "#fff",
-                fontWeight: "700",
-                cursor: "pointer",
-              }}
-            >
-              Clear Cart
-            </button>
+            <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
+              <button
+                onClick={onContinue}
+                style={{
+                  padding: "12px 20px",
+                  borderRadius: "10px",
+                  border: "none",
+                  background: colors.mauve,
+                  color: "#fff",
+                  fontWeight: "700",
+                  cursor: "pointer",
+                }}
+              >
+                Continue to checkout
+              </button>
+
+              <button
+                onClick={onClear}
+                style={{
+                  padding: "12px 20px",
+                  borderRadius: "10px",
+                  border: "none",
+                  background: "#f1e2e4",
+                  color: colors.dark,
+                  fontWeight: "700",
+                  cursor: "pointer",
+                }}
+              >
+                Clear Cart
+              </button>
+            </div>
           </div>
         </>
+      )}
+    </section>
+  );
+}
+
+function CheckoutPage({
+  cartItems,
+  user,
+  role,
+  onBack,
+  onLogin,
+  onPlaceOrder,
+}: {
+  cartItems: Product[];
+  user: User | null;
+  role: Role | null;
+  onBack: () => void;
+  onLogin: () => void;
+  onPlaceOrder: (
+    customerName: string,
+    phone: string,
+    shippingAddress: string
+  ) => Promise<void>;
+}) {
+  const [customerName, setCustomerName] = useState(user?.displayName ?? "");
+  const [phone, setPhone] = useState("");
+  const [shippingAddress, setShippingAddress] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const total = cartItems.reduce((sum, product) => sum + product.price, 0);
+
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setError("");
+
+    if (!user) {
+      setError("Please log in before placing your order.");
+      return;
+    }
+    if (role !== "buyer") {
+      setError("Only buyer accounts can place orders.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await onPlaceOrder(customerName, phone, shippingAddress);
+    } catch (submitError) {
+      setError(
+        submitError instanceof Error
+          ? submitError.message
+          : "Couldn't place your order."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (cartItems.length === 0) {
+    return (
+      <section>
+        <h1 style={{ fontSize: "42px" }}>Checkout</h1>
+        <p style={{ color: colors.text }}>Your cart is empty.</p>
+        <button type="button" onClick={onBack} style={checkoutButtonStyle}>
+          Back to cart
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section>
+      <button
+        type="button"
+        onClick={onBack}
+        style={{ ...checkoutButtonStyle, background: "#fff", color: colors.dark, border: `1px solid ${colors.pink}` }}
+      >
+        ← Back to cart
+      </button>
+      <h1 style={{ fontSize: "42px" }}>Checkout</h1>
+      <p style={{ color: colors.text, marginTop: -12 }}>
+        Review your order and enter your delivery details.
+      </p>
+
+      {!user ? (
+        <div className="checkout-notice">
+          <p>Please log in as a buyer to place your order.</p>
+          <button type="button" onClick={onLogin} style={checkoutButtonStyle}>
+            Log in to continue
+          </button>
+        </div>
+      ) : role !== "buyer" ? (
+        <div className="checkout-notice" role="alert">
+          Only buyer accounts can place orders.
+        </div>
+      ) : (
+        <form onSubmit={handleSubmit} className="checkout-layout">
+          <div className="checkout-panel">
+            <h2>Delivery details</h2>
+            <label>
+              Full name
+              <input
+                autoComplete="name"
+                maxLength={150}
+                minLength={1}
+                required
+                value={customerName}
+                onChange={(event) => setCustomerName(event.target.value)}
+                placeholder="Name for delivery"
+              />
+            </label>
+            <label>
+              Phone number
+              <input
+                autoComplete="tel"
+                type="tel"
+                minLength={7}
+                maxLength={20}
+                required
+                value={phone}
+                onChange={(event) => setPhone(event.target.value)}
+                placeholder="Contact number"
+              />
+            </label>
+            <label>
+              Shipping address
+              <textarea
+                autoComplete="street-address"
+                minLength={5}
+                maxLength={1000}
+                required
+                rows={4}
+                value={shippingAddress}
+                onChange={(event) => setShippingAddress(event.target.value)}
+                placeholder="House number, street, city, state, postal code"
+              />
+            </label>
+            <div className="checkout-payment-note">
+              <strong>Payment</strong>
+              <span>Payment is not collected online. Your order will be placed as pending.</span>
+            </div>
+            {error && <p role="alert" className="checkout-error">{error}</p>}
+            <button
+              type="submit"
+              disabled={submitting}
+              style={{ ...checkoutButtonStyle, width: "100%", marginTop: "18px" }}
+            >
+              {submitting ? "Placing order..." : `Place order · ₹${total.toLocaleString("en-IN")}`}
+            </button>
+          </div>
+
+          <aside className="checkout-panel">
+            <h2>Order summary</h2>
+            <div className="checkout-items">
+              {cartItems.map((product, index) => (
+                <div className="checkout-item" key={`${product.id}-${index}`}>
+                  <img src={product.image} alt="" />
+                  <div>
+                    <strong>{product.name}</strong>
+                    <span>{product.category}</span>
+                    <span>Qty: 1</span>
+                  </div>
+                  <strong>₹{product.price.toLocaleString("en-IN")}</strong>
+                </div>
+              ))}
+            </div>
+            <div className="checkout-total">
+              <span>Total</span>
+              <strong>₹{total.toLocaleString("en-IN")}</strong>
+            </div>
+          </aside>
+        </form>
+      )}
+    </section>
+  );
+}
+
+const checkoutButtonStyle: React.CSSProperties = {
+  padding: "12px 20px",
+  borderRadius: "10px",
+  border: "none",
+  background: colors.mauve,
+  color: "#fff",
+  fontWeight: 700,
+  cursor: "pointer",
+};
+
+function OrderHistoryPage() {
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadOrders = async () => {
+      try {
+        const data = await getMyOrders();
+        if (active) {
+          setOrders(data);
+          setError(null);
+        }
+      } catch (err) {
+        if (active) {
+          setError(err instanceof Error ? err.message : "Could not load your orders.");
+        }
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    void loadOrders();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  return (
+    <section>
+      <h1 style={{ fontSize: "42px" }}>Order History 📦</h1>
+      <p style={{ color: colors.text, marginBottom: "24px" }}>
+        Track your recent purchases and shipping status.
+      </p>
+
+      {loading ? (
+        <p style={{ color: colors.text }}>Loading your orders...</p>
+      ) : error ? (
+        <p role="alert" style={{ color: "#c62828" }}>{error}</p>
+      ) : orders.length === 0 ? (
+        <div
+          style={{
+            background: "#fff",
+            padding: "40px",
+            borderRadius: "18px",
+            border: `1px solid ${colors.pink}`,
+            textAlign: "center",
+          }}
+        >
+          <h2 style={{ marginTop: 0 }}>No orders yet</h2>
+          <p style={{ color: colors.text }}>
+            Your order history will appear here after you place a purchase.
+          </p>
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: "18px" }}>
+          {orders.map((order) => (
+            <article
+              key={order.id}
+              style={{
+                background: "#fff",
+                border: `1px solid ${colors.pink}`,
+                borderRadius: "18px",
+                padding: "22px",
+              }}
+            >
+              <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+                <div>
+                  <p style={{ margin: 0, color: colors.mauve, fontWeight: 700 }}>
+                    Order #{order.id}
+                  </p>
+                  <p style={{ margin: "8px 0 0", color: colors.text }}>
+                    {new Date(order.created_at).toLocaleDateString("en-IN", {
+                      day: "numeric",
+                      month: "short",
+                      year: "numeric",
+                    })}
+                  </p>
+                </div>
+                <div style={{ textAlign: "right" }}>
+                  <p style={{ margin: 0, fontWeight: 700, fontSize: "20px" }}>
+                    ₹{Number(order.total_amount).toLocaleString("en-IN")}
+                  </p>
+                  <p
+                    style={{
+                      margin: "8px 0 0",
+                      color: order.status === "Pending" ? colors.mauve : colors.dark,
+                      fontWeight: 700,
+                    }}
+                  >
+                    {order.status}
+                  </p>
+                </div>
+              </div>
+
+              <div style={{ marginTop: "18px", display: "grid", gap: "8px" }}>
+                <p style={{ margin: 0, fontWeight: 700 }}>Shipping details</p>
+                <p style={{ margin: 0, color: colors.text }}>{order.customer_name}</p>
+                <p style={{ margin: 0, color: colors.text }}>{order.phone}</p>
+                <p style={{ margin: 0, color: colors.text }}>{order.shipping_address}</p>
+              </div>
+
+              <div style={{ marginTop: "18px", display: "grid", gap: "10px" }}>
+                {order.items.map((item) => (
+                  <div
+                    key={`${order.id}-${item.product_id}`}
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      gap: "16px",
+                      borderTop: "1px solid #f3dde0",
+                      paddingTop: "10px",
+                    }}
+                  >
+                    <div>
+                      <p style={{ margin: 0, fontWeight: 600 }}>{item.product_title}</p>
+                      <p style={{ margin: "4px 0 0", color: colors.text }}>
+                        Qty: {item.quantity} · ₹{Number(item.unit_price).toLocaleString("en-IN")} each
+                      </p>
+                    </div>
+                    <strong>₹{Number(item.subtotal).toLocaleString("en-IN")}</strong>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
       )}
     </section>
   );
@@ -2227,32 +3043,21 @@ function LoginPage({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [role, setRole] = useState<"buyer" | "seller">("buyer");
+  const [resetLoading, setResetLoading] = useState(false);
+  const [resetMessage, setResetMessage] = useState("");
+  const [resetError, setResetError] = useState("");
 
   const handleLogin = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
-    if (!email || !password) {
+    if (!email.trim() || !password) {
       alert("Please enter email and password ❌");
       return;
     }
 
-    if (!isFirebaseConfigured) {
-      alert("Firebase authentication is not configured in this environment. Please set VITE_FIREBASE_API_KEY in your .env file.");
-      return;
-    }
-
     try {
-      await signInWithEmailAndPassword(auth, email, password);
-
-      // Selected role for this login session
-      localStorage.setItem("userRole", role);
-
-      alert(
-        `Login successful! 🎉\nLogged in as ${
-          role === "buyer" ? "Buyer 🛍️" : "Seller 🏪"
-        }`
-      );
+      await signInWithEmailAndPassword(auth, email.trim(), password);
+      onHome();
     } catch (error: any) {
       console.error("Firebase Login Error:", error);
 
@@ -2265,6 +3070,34 @@ function LoginPage({
       } else {
         alert(`Login Error:\n\n${error.message}`);
       }
+    }
+  };
+
+  const handlePasswordReset = async () => {
+    setResetMessage("");
+    setResetError("");
+
+    const normalizedEmail = email.trim();
+    if (!normalizedEmail) {
+      setResetError("Please enter your email address above first.");
+      return;
+    }
+
+    setResetLoading(true);
+    try {
+      await sendPasswordResetEmail(auth, normalizedEmail);
+      setResetMessage(
+        "If an account exists for this email, a password-reset email has been requested. Check your inbox and spam folder."
+      );
+    } catch (error) {
+      // Keep the same message whether or not the email is registered.
+      // This avoids revealing which email addresses have accounts.
+      console.error("Firebase password reset error:", error);
+      setResetMessage(
+        "If an account exists for this email, a password-reset email has been requested. Check your inbox and spam folder."
+      );
+    } finally {
+      setResetLoading(false);
     }
   };
 
@@ -2304,7 +3137,12 @@ function LoginPage({
             type="email"
             placeholder="Enter your email"
             value={email}
-            onChange={(e) => setEmail(e.target.value)}
+            onChange={(e) => {
+              setEmail(e.target.value);
+              setResetMessage("");
+              setResetError("");
+            }}
+            required
             style={{
               width: "100%",
               padding: "13px",
@@ -2324,87 +3162,64 @@ function LoginPage({
             placeholder="Enter your password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
+            required
             style={{
               width: "100%",
               padding: "13px",
               marginTop: "8px",
-              marginBottom: "25px",
+              marginBottom: "8px",
               borderRadius: "10px",
               border: "1px solid #e4afb0",
               boxSizing: "border-box",
             }}
           />
 
-          {/* ROLE */}
-          <label
-            style={{
-              fontWeight: "600",
-              display: "block",
-              marginBottom: "12px",
-            }}
-          >
-            Login as
-          </label>
-
-          <div
-            style={{
-              display: "flex",
-              gap: "15px",
-              marginBottom: "25px",
-            }}
-          >
-            {/* Buyer */}
-            <label
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "18px" }}>
+            <button
+              type="button"
+              onClick={handlePasswordReset}
+              disabled={resetLoading}
               style={{
-                flex: 1,
-                padding: "15px",
-                borderRadius: "12px",
-                border:
-                  role === "buyer"
-                    ? "2px solid #9A7787"
-                    : "1px solid #ddd",
-                background: role === "buyer" ? "#FDF5F2" : "#fff",
-                cursor: "pointer",
-                textAlign: "center",
+                border: "none",
+                background: "transparent",
+                color: "#9A7787",
+                fontWeight: "700",
+                cursor: resetLoading ? "wait" : "pointer",
+                padding: "5px 0",
               }}
             >
-              <input
-                type="radio"
-                name="role"
-                value="buyer"
-                checked={role === "buyer"}
-                onChange={() => setRole("buyer")}
-                style={{ marginRight: "8px" }}
-              />
-              🛍️ Buyer
-            </label>
-
-            {/* Seller */}
-            <label
-              style={{
-                flex: 1,
-                padding: "15px",
-                borderRadius: "12px",
-                border:
-                  role === "seller"
-                    ? "2px solid #9A7787"
-                    : "1px solid #ddd",
-                background: role === "seller" ? "#FDF5F2" : "#fff",
-                cursor: "pointer",
-                textAlign: "center",
-              }}
-            >
-              <input
-                type="radio"
-                name="role"
-                value="seller"
-                checked={role === "seller"}
-                onChange={() => setRole("seller")}
-                style={{ marginRight: "8px" }}
-              />
-              🏪 Seller
-            </label>
+              {resetLoading ? "Sending reset email..." : "Forgot password?"}
+            </button>
           </div>
+
+          {resetMessage && (
+            <p
+              role="status"
+              style={{
+                color: "#26734D",
+                background: "#EAF6EF",
+                borderRadius: "8px",
+                padding: "10px",
+                fontSize: "14px",
+                lineHeight: 1.5,
+              }}
+            >
+              {resetMessage}
+            </p>
+          )}
+
+          {resetError && (
+            <p
+              role="alert"
+              style={{
+                color: "#C62828",
+                fontSize: "14px",
+                marginTop: 0,
+              }}
+            >
+              {resetError}
+            </p>
+          )}
 
           {/* Login Button */}
           <button
@@ -2428,6 +3243,7 @@ function LoginPage({
         <p style={{ textAlign: "center", marginTop: "25px" }}>
           Don't have an account?{" "}
           <button
+            type="button"
             onClick={onSignup}
             style={{
               border: "none",
@@ -2442,6 +3258,7 @@ function LoginPage({
         </p>
 
         <button
+          type="button"
           onClick={onHome}
           style={{
             width: "100%",
@@ -2465,9 +3282,11 @@ function LoginPage({
 function SignupPage({
   onLogin,
   onHome,
+  onRegistered,
 }: {
   onLogin: () => void;
   onHome: () => void;
+  onRegistered: (serverUser: AuthUser) => void;
 }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -2487,11 +3306,6 @@ function SignupPage({
       return;
     }
 
-    if (!isFirebaseConfigured) {
-      alert("Firebase authentication is not configured in this environment. Please set VITE_FIREBASE_API_KEY in your .env file.");
-      return;
-    }
-
     try {
       const userCredential = await createUserWithEmailAndPassword(
         auth,
@@ -2502,9 +3316,9 @@ function SignupPage({
       await updateProfile(userCredential.user, {
         displayName: name,
       });
-onHome();
-      // Save selected role
-      localStorage.setItem("userRole", role);
+      const serverUser = await registerRole(role);
+      onRegistered(serverUser);
+      onHome();
 
       alert(
         `Account created successfully! 🎉\nYou registered as ${
