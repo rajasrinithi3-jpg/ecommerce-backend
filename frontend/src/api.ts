@@ -1,21 +1,114 @@
-// API_BASE_URL is read from a Vite env var so the app can point at a
-// backend running on another machine on the LAN without a code change.
-// Set VITE_API_BASE_URL in a .env file (see .env.example) e.g.:
-//   VITE_API_BASE_URL=http://192.168.1.23:8000
+
+import { auth } from "./firebase";
+
+// Backend URL
 const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL ?? "";
+  import.meta.env.VITE_API_BASE_URL ?? "http://127.0.0.1:8000";
 
-async function fetchJSON<T>(url: string): Promise<T> {
-  const response = await fetch(url);
+export function getBackendAssetUrl(path: string | null | undefined) {
+  if (!path) return undefined;
+  if (/^https?:\/\//i.test(path)) return path;
+  return `${API_BASE_URL}${path.startsWith("/") ? "" : "/"}${path}`;
+}
 
-  if (!response.ok) {
-    throw new Error(
-      `API request failed: ${response.status} ${response.statusText}`
-    );
+// ---------------- API ERROR ----------------
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+// ---------------- API FETCH ----------------
+
+async function apiFetch(
+  url: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+
+  const token = await auth.currentUser?.getIdToken();
+
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
   }
 
-  return response.json();
+  const response = await fetch(url, {
+    ...init,
+    headers,
+  });
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+
+    const message =
+      typeof body?.detail === "string"
+        ? body.detail
+        : `API request failed: ${response.status} ${response.statusText}`;
+
+    if (
+      (response.status === 401 || response.status === 403) &&
+      (response.status === 401 || !url.endsWith("/auth/me"))
+    ) {
+      window.dispatchEvent(
+        new CustomEvent("commerceiq:api-error", {
+          detail: {
+            status: response.status,
+            message,
+          },
+        })
+      );
+    }
+
+    throw new ApiError(response.status, message);
+  }
+
+  return response;
 }
+
+async function fetchJSON<T>(url: string): Promise<T> {
+  const response = await apiFetch(url);
+  return response.json() as Promise<T>;
+}
+
+// ---------------- AUTHENTICATION ----------------
+
+export type AuthRole = "buyer" | "seller";
+
+export type AuthUser = {
+  uid: string;
+  email: string | null;
+  role: AuthRole;
+};
+
+export async function registerRole(role: AuthRole) {
+  const response = await apiFetch(
+    `${API_BASE_URL}/auth/register`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ role }),
+    }
+  );
+
+  return response.json() as Promise<
+    AuthUser & { created_at: string }
+  >;
+}
+
+export async function getCurrentUser() {
+  return fetchJSON<AuthUser>(
+    `${API_BASE_URL}/auth/me`
+  );
+}
+
+// ---------------- CHATBOT ----------------
 
 export type ChatMessage = {
   role: "user" | "assistant";
@@ -30,7 +123,12 @@ export type ChatProduct = {
   rating: number | null;
   discount_pct: number | null;
   image: string | null;
-  signal: "BUY_NOW" | "GOOD_DEAL" | "WAIT" | "PRICE_RISING" | "NO_DATA";
+  signal:
+    | "BUY_NOW"
+    | "GOOD_DEAL"
+    | "WAIT"
+    | "PRICE_RISING"
+    | "NO_DATA";
 };
 
 export type ChatResponse = {
@@ -39,24 +137,35 @@ export type ChatResponse = {
   mode: "ai" | "offline";
 };
 
-export async function sendChat(message: string, history: ChatMessage[]) {
-  const response = await fetch(`${API_BASE_URL}/chat`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ message, history: history.slice(-6) }),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    const detail = typeof body?.detail === "string" ? body.detail : response.statusText;
-    throw new Error(detail || "Chat request failed. Please try again.");
-  }
+export async function sendChat(
+  message: string,
+  history: ChatMessage[]
+) {
+  const response = await apiFetch(
+    `${API_BASE_URL}/chat`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        message,
+        history: history.slice(-6),
+      }),
+    }
+  );
+
   return response.json() as Promise<ChatResponse>;
 }
+
+// ---------------- CATEGORY ----------------
 
 export type BackendCategory = {
   id: number;
   name: string;
 };
+
+// ---------------- PRODUCT ----------------
 
 export type BackendProduct = {
   id: number;
@@ -74,7 +183,22 @@ export type BackendProduct = {
   bought_past_month?: number | null;
   bs_rank?: number | null;
   number_of_sellers?: number | null;
+  seller_id?: string | null;
 };
+
+export async function getProducts() {
+  return fetchJSON<BackendProduct[]>(
+    `${API_BASE_URL}/products`
+  );
+}
+
+export async function getProduct(id: number) {
+  return fetchJSON<BackendProduct>(
+    `${API_BASE_URL}/products/${id}`
+  );
+}
+
+// ---------------- REVIEWS ----------------
 
 export type BackendReview = {
   id: number;
@@ -83,12 +207,64 @@ export type BackendReview = {
   comment?: string | null;
 };
 
+export async function getProductReviews(id: number) {
+  return fetchJSON<BackendReview[]>(
+    `${API_BASE_URL}/products/${id}/reviews`
+  );
+}
+
+export async function addProductReview(
+  id: number,
+  rating: number,
+  comment: string
+) {
+  const response = await apiFetch(
+    `${API_BASE_URL}/products/${id}/reviews`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        rating,
+        comment,
+      }),
+    }
+  );
+
+  return response.json() as Promise<BackendReview>;
+}
+
+// ---------------- CATEGORIES API ----------------
+
+export async function getCategories() {
+  return fetchJSON<BackendCategory[]>(
+    `${API_BASE_URL}/categories`
+  );
+}
+
+// ---------------- RECOMMENDATIONS ----------------
+
 export type Recommendation = {
   title: string;
   brand: string | null;
   categories: string | null;
   similarity_score: number;
 };
+
+export async function getProductRecommendations(
+  id: number
+) {
+  try {
+    return await fetchJSON<Recommendation[]>(
+      `${API_BASE_URL}/products/${id}/recommendations`
+    );
+  } catch {
+    return [];
+  }
+}
+
+// ---------------- MARKET INSIGHTS ----------------
 
 export type Competitor = {
   id: number;
@@ -102,7 +278,12 @@ export type Competitor = {
 };
 
 export type BuyOrWait = {
-  recommendation: "BUY_NOW" | "GOOD_DEAL" | "WAIT" | "PRICE_RISING" | "NO_DATA";
+  recommendation:
+    | "BUY_NOW"
+    | "GOOD_DEAL"
+    | "WAIT"
+    | "PRICE_RISING"
+    | "NO_DATA";
   reason: string;
 };
 
@@ -117,6 +298,14 @@ export type MarketInsight = {
   buy_or_wait: BuyOrWait;
   competitors: Competitor[];
 };
+
+export async function getMarketInsight(id: number) {
+  return fetchJSON<MarketInsight>(
+    `${API_BASE_URL}/products/${id}/market-insight`
+  );
+}
+
+// ---------------- STORE ANALYTICS ----------------
 
 export type CategoryBreakdown = {
   category: string;
@@ -147,84 +336,13 @@ export type AnalyticsOverview = {
   }[];
 };
 
-// Get all products
-export async function getProducts() {
-  return fetchJSON<BackendProduct[]>(`${API_BASE_URL}/products`);
-}
-
-// Get one product
-export async function getProduct(id: number) {
-  return fetchJSON<BackendProduct>(`${API_BASE_URL}/products/${id}`);
-}
-
-// Get product reviews
-export async function getProductReviews(id: number) {
-  return fetchJSON<BackendReview[]>(
-    `${API_BASE_URL}/products/${id}/reviews`
-  );
-}
-
-export async function addProductReview(
-  id: number,
-  rating: number,
-  comment: string,
-  idToken: string
-) {
-  const token = idToken?.trim();
-  if (!token) {
-    throw new Error("You must be logged in to submit a review.");
-  }
-  const response = await fetch(`${API_BASE_URL}/products/${id}/reviews`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${token}`,
-    },
-    body: JSON.stringify({ rating, comment }),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => null);
-    if (response.status === 401) {
-      throw new Error(body?.detail || "Your session has expired or is invalid. Please log in again.");
-    }
-    if (response.status === 429) {
-      throw new Error(body?.detail || "You have submitted too many reviews. Rate limit is 5 reviews per minute.");
-    }
-    throw new Error(body?.detail ?? "Couldn't submit your review.");
-  }
-  return response.json() as Promise<BackendReview>;
-}
-
-// Get categories
-export async function getCategories() {
-  return fetchJSON<BackendCategory[]>(`${API_BASE_URL}/categories`);
-}
-
-// Get AI recommendations for a product, by its database id.
-// Falls back gracefully (empty array) if the backend has no match
-// for this product's title in the recommendation dataset.
-export async function getProductRecommendations(id: number) {
-  try {
-    return await fetchJSON<Recommendation[]>(
-      `${API_BASE_URL}/products/${id}/recommendations`
-    );
-  } catch {
-    return [];
-  }
-}
-
-// Profit/loss, buy-or-wait signal, and category competitors for one product.
-export async function getMarketInsight(id: number) {
-  return fetchJSON<MarketInsight>(
-    `${API_BASE_URL}/products/${id}/market-insight`
-  );
-}
-
-// Store-wide analytics: category breakdown, biggest discounts, trending
-// products. Computed fresh from the database on every call.
 export async function getAnalyticsOverview() {
-  return fetchJSON<AnalyticsOverview>(`${API_BASE_URL}/api/analytics/summary`);
+  return fetchJSON<AnalyticsOverview>(
+    `${API_BASE_URL}/api/analytics/summary`
+  );
 }
+
+// ---------------- BUYER DASHBOARD ----------------
 
 export type DealProduct = {
   id: number;
@@ -246,7 +364,18 @@ export type BuyerDashboard = {
   trending: DealProduct[];
 };
 
-export type SellerSignal = "RAISE_PRICE" | "SELL_NOW" | "REDUCE_PRICE";
+export async function getBuyerDashboard() {
+  return fetchJSON<BuyerDashboard>(
+    `${API_BASE_URL}/analytics/buyer`
+  );
+}
+
+// ---------------- SELLER ANALYTICS DASHBOARD ----------------
+
+export type SellerSignal =
+  | "RAISE_PRICE"
+  | "SELL_NOW"
+  | "REDUCE_PRICE";
 
 export type SellerDashboard = {
   generated_at: string;
@@ -292,11 +421,147 @@ export type SellerDashboard = {
   }[];
 };
 
-export async function getBuyerDashboard() {
-  return fetchJSON<BuyerDashboard>(`${API_BASE_URL}/analytics/buyer`);
+export async function getSellerDashboard(
+  categoryId?: number
+) {
+  const query =
+    categoryId !== undefined
+      ? `?category_id=${categoryId}`
+      : "";
+
+  return fetchJSON<SellerDashboard>(
+    `${API_BASE_URL}/analytics/seller${query}`
+  );
 }
 
-export async function getSellerDashboard(categoryId?: number) {
-  const query = categoryId !== undefined ? `?category_id=${categoryId}` : "";
-  return fetchJSON<SellerDashboard>(`${API_BASE_URL}/analytics/seller${query}`);
+// ---------------- SELLER PRODUCT MANAGEMENT ----------------
+
+// Product fields accepted by the seller product endpoints.
+// The backend assigns seller_id from the authenticated user.
+export type SellerProductInput = {
+  title: string;
+  description?: string | null;
+  price: number;
+  brand?: string | null;
+  category_id: number;
+};
+
+// List the authenticated seller's products.
+export async function getSellerProducts() {
+  return fetchJSON<BackendProduct[]>(
+    `${API_BASE_URL}/seller/products`
+  );
+}
+
+// Create a new product.
+export async function addSellerProduct(
+  product: SellerProductInput
+) {
+  const response = await apiFetch(
+    `${API_BASE_URL}/seller/products`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(product),
+    }
+  );
+
+  return response.json() as Promise<BackendProduct>;
+}
+
+// Update an existing product owned by the seller.
+export async function updateSellerProduct(
+  id: number,
+  product: Partial<SellerProductInput>
+) {
+  const response = await apiFetch(
+    `${API_BASE_URL}/seller/products/${id}`,
+    {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(product),
+    }
+  );
+
+  return response.json() as Promise<BackendProduct>;
+}
+
+// Delete an existing product owned by the seller.
+export async function deleteSellerProduct(id: number) {
+  const response = await apiFetch(
+    `${API_BASE_URL}/seller/products/${id}`,
+    {
+      method: "DELETE",
+    }
+  );
+
+  return response.json() as Promise<{
+    message: string;
+    id: number;
+  }>;
+}
+
+export async function uploadSellerProductImage(id: number, file: File) {
+  const formData = new FormData();
+  formData.append("file", file);
+
+  const response = await apiFetch(
+    `${API_BASE_URL}/seller/products/${id}/image`,
+    {
+      method: "POST",
+      body: formData,
+    }
+  );
+
+  return response.json() as Promise<{
+    message: string;
+    image: string;
+    product_id: number;
+  }>;
+}
+
+// ---------------- ORDER HISTORY ----------------
+
+export type OrderItem = {
+  product_id: number;
+  product_title: string;
+  quantity: number;
+  unit_price: number;
+  subtotal: number;
+};
+
+export type Order = {
+  id: number;
+  customer_name: string;
+  phone: string;
+  shipping_address: string;
+  total_amount: number;
+  status: string;
+  created_at: string;
+  items: OrderItem[];
+};
+
+export async function createOrder(payload: {
+  customer_name: string;
+  phone: string;
+  shipping_address: string;
+  items: { product_id: number; quantity: number }[];
+}) {
+  const response = await apiFetch(`${API_BASE_URL}/orders`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  return response.json() as Promise<Order>;
+}
+
+export async function getMyOrders() {
+  return fetchJSON<Order[]>(`${API_BASE_URL}/orders/my-orders`);
 }

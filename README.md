@@ -1,5 +1,23 @@
 # CommerceIQ-AI
 
+## Run with Docker
+
+1. Copy the example env file at the repo root:
+   ```bash
+   copy .env.example .env
+   ```
+2. Start the app:
+   ```bash
+   docker compose up --build
+   ```
+3. Open the app in your browser:
+   - Frontend: http://localhost:5173
+   - Backend API: http://localhost:8000/docs
+4. To reset the database and container state:
+   ```bash
+   docker compose down -v
+   ```
+
 If this project was downloaded into a same-named folder, this directory (the one containing this
 README) is the project root. Run the setup commands below from this directory, not from its parent.
 
@@ -29,6 +47,7 @@ One repo, one `git push`. Don't commit `.venv`, `node_modules`, `*.db`, `.env`
 **Backend** (terminal 1)
 ```
 cd backend
+copy .env.example .env
 python -m venv .venv
 .venv\Scripts\activate            # Windows   (Mac/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
@@ -44,26 +63,33 @@ npm install
 npm run dev
 ```
 Open the URL Vite prints (usually http://localhost:5173).
+The frontend defaults to `http://127.0.0.1:8000`, matching the backend command above.
+For seller product management, sign in with a seller account; adding, editing, deleting, and
+listing products call the authenticated `/seller/products` API. The backend `.env` must use the
+same `FIREBASE_PROJECT_ID` as the Firebase project configured by the frontend.
 
 ## How to test
 
 1. **Backend health** – open http://127.0.0.1:8000/docs (Swagger). Expect:
-   - `GET /products` -> 1000 items, `GET /categories` -> 17 (from 28 raw dataset categories, where categories with < 10 products are grouped into 'Other')
+   - `GET /products` -> 1000 items, `GET /categories` -> 28
    - `GET /products/3/market-insight` -> `BUY_NOW`, discount about -32%, 5 competitors
    - `GET /products/1/recommendations` -> 5 similar products
    - `GET /analytics/overview` -> totals, category breakdown, top discounts, trending
    - `GET /analytics/buyer` -> best_deals, wait_list, top_rated, trending
    - `GET /analytics/seller` (and `?category_id=2`) -> kpis, pricing_opportunities, margin_pressure, competition
 2. **Frontend** – with backend running:
-   - Products page: real products/images, category chips (17 categories: 16 retained plus 'Other') filter correctly
+   - Products page: real products/images, category chips (28 real categories) filter correctly
    - Click a product: Market Insight (buy/wait badge, list vs current price, loss %, competitors),
      reviews, and "You may also like"
    - Click a competitor row: jumps to that product
    - **Gates:** logged out -> click Buyer/Seller Dashboard -> "Please log in". After login, first visit asks
      "Buyer or Seller?". A buyer opening the Seller Dashboard sees "Sellers only" + a switch button (and vice versa).
    - **Buyer Dashboard:** best deals, wait list, top rated, trending (click a row to open the product)
-   - **Seller Dashboard:** category picker, KPIs, pricing opportunities, margin pressure, crowded categories,
-     store-wide overview (all auto-refresh every 30s)
+   - **Checkout:** add products to the cart, continue to checkout, enter delivery details, review the order,
+     and place it as a pending order. Online payment is not configured.
+   - **Seller Dashboard:** add, edit, delete, and upload images for your listings; category picker,
+     KPIs, pricing opportunities, margin pressure, crowded categories, and store-wide overview
+     (analytics auto-refresh every 30s)
 3. **Two laptops on the same Wi-Fi** – on the backend machine find its IP (`ipconfig`),
    then on the frontend machine set `VITE_API_BASE_URL=http://<that-ip>:8000` in `frontend/.env`
    and restart `npm run dev`. On the backend machine set
@@ -78,8 +104,8 @@ Open the URL Vite prints (usually http://localhost:5173).
 - Competitors = products in the same category closest in price.
 - **Rupees:** the CSV is mostly USD, so `load_data.py` converts to INR while loading (default 88 per USD, 115 per GBP).
   Change with `USD_TO_INR=90 python scripts/load_data.py`. Re-run the script after changing the rate.
-- **Gates are UI-only (V1).** The role is stored per Firebase user in the browser's localStorage. It hides the
-  dashboards but is not real security; the API endpoints are still open. Real enforcement needs Firebase custom
-  claims or verifying the Firebase ID token in FastAPI.
-- The seller dashboard is a market view (the CSV has no seller ownership or cost data): pricing signals compare each
-  product to its category median price plus demand (`bought_past_month`) and rating.
+- Dashboard visibility is controlled in the UI, and seller product APIs additionally verify the Firebase ID
+  token and seller role on the backend. Analytics should not be treated as seller-owned inventory or profit data.
+- The seller dashboard summarizes the signed-in seller's own listings and compares their prices with category market
+  medians. Imported CSV products do not belong to a signed-in seller; new listings are assigned to that seller.
+  Demand signals for manually created listings remain unavailable unless purchase data is added.

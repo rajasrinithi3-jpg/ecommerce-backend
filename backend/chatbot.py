@@ -281,10 +281,10 @@ class ChatbotService:
             "relaxed_budget": relaxed_budget,
         }
 
-    async def reply(self, message: str, history: list[dict], candidates: list[dict], context: dict) -> tuple[str, str, Optional[str]]:
+    async def reply(self, message: str, history: list[dict], candidates: list[dict], context: dict) -> tuple[str, str]:
         token = os.getenv("GITHUB_MODELS_TOKEN", "").strip()
         if not token:
-            return self.offline_reply(candidates, context), "offline", "not_configured"
+            return self.offline_reply(candidates, context), "offline"
 
         compact_candidates = [
             {
@@ -305,29 +305,18 @@ class ChatbotService:
             "content": f"CANDIDATES: {json.dumps(compact_candidates, ensure_ascii=False)}\nQUESTION: {message}",
         })
 
-        fallback_reason = None
         try:
             response = await request_llm(token, messages)
             text = response["choices"][0]["message"]["content"].strip()
             if text:
-                return text, "ai", None
-        except httpx.HTTPStatusError as exc:
-            # Safe logging: log status code only, never headers, tokens or bodies
-            status_code = exc.response.status_code if exc.response is not None else 0
-            if status_code in (401, 403):
-                fallback_reason = "provider_rejected"
-            else:
-                fallback_reason = "provider_unavailable"
-        except (httpx.RequestError, httpx.TimeoutException):
-            fallback_reason = "provider_unavailable"
+                return text, "ai"
         except Exception:
-            fallback_reason = "provider_unavailable"
-
-        return self.offline_reply(candidates, context), "offline", fallback_reason
+            pass
+        return self.offline_reply(candidates, context), "offline"
 
     def offline_reply(self, candidates: list[dict], context: dict) -> str:
         if not candidates:
-            return "I couldn't find matching products in the catalog. Try a different category or budget."
+            return "I couldn't find a match in the catalog yet. Try a broader category or budget and I'll take another look."
 
         qualifiers = []
         budget = context["budget"]
@@ -343,7 +332,7 @@ class ChatbotService:
             qualifiers.append(f"in {category}")
 
         description = f" {' '.join(qualifiers)}" if qualifiers else ""
-        text = f"Here are {len(candidates)} options{description}:"
+        text = f"I found {len(candidates)} options{description}. Here are a few worth a look:"
         if context["relaxed_category"]:
             text += " I couldn't find matches in that category, so these are from other categories."
         if context["relaxed_budget"]:
@@ -351,6 +340,7 @@ class ChatbotService:
         for product in candidates:
             rating = f", rating {product['rating']:.1f}" if product["rating"] is not None else ""
             text += f"\n• {product['title'][:90]} — ₹{product['price']:,.0f}{rating}; {product['signal'].replace('_', ' ')}."
+        text += "\nWant me to narrow these down by brand or compare a couple?"
         return text
 
 

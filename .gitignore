@@ -5,9 +5,11 @@ venv/
 .pytest_cache/
 *.db
 *.log
+*.tsbuildinfo
 node_modules/
 dist/
 .vite/
+backend/uploads/
 .env
 .env.local
 .env.*.local
